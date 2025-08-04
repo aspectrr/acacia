@@ -1,0 +1,27 @@
+{
+  "name": "remora",
+  "version": "1.0.0",
+  "description": "Open source extension proxy for web applications",
+  "main": "index.ts",
+  "scripts": {
+    "start": "bun run index.ts",
+    "dev": "bun run --watch index.ts",
+    "db:generate": "drizzle-kit generate:pg",
+    "db:migrate": "bun run migrate.ts",
+    "db:studio": "drizzle-kit studio"
+  },
+  "module": "index.ts",
+  "type": "module",
+  "devDependencies": {
+    "@types/bun": "latest",
+    "drizzle-kit": "^0.31.4"
+  },
+  "peerDependencies": {
+    "typescript": "^5"
+  },
+  "dependencies": {
+    "drizzle-orm": "^0.44.4",
+    "lucide-react": "^0.536.0",
+    "react": "^19.1.1"
+  }
+}
