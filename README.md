@@ -1,2 +1,3 @@
-# remora
-Let people make your app custom, with one container
+# Acacia 🌳
+
+Malleable Software as a Service
