@@ -21,7 +21,6 @@
   },
   "dependencies": {
     "drizzle-orm": "^0.44.4",
-    "lucide-react": "^0.536.0",
-    "react": "^19.1.1"
+    "postgres": "^3.4.7"
   }
 }
