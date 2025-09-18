@@ -1,0 +1,55 @@
+# Acacia Sidecar - Attach to any existing product
+version: "3.8"
+
+services:
+  acacia:
+    build:
+      context: .
+      dockerfile: Dockerfile.sidecar
+    container_name: acacia
+    ports:
+      - "8080:8080" # Avoid conflicts with main app
+    environment:
+      - NODE_ENV=production
+      - OPENROUTER_API_KEY=${OPENROUTER_API_KEY}
+      - HOST_PROJECT_PATH=${HOST_PROJECT_PATH}
+      - MAIN_APP_URL=${MAIN_APP_URL:-http://host.docker.internal:3000}
+    volumes:
+      # Mount the host project for file operations
+      - ${HOST_PROJECT_PATH:-./host-project}:/workspace/host-project:rw
+      # Shared workspace for agents
+      - acacia-workspace:/workspace/agents
+      # Optional: Mount node_modules for faster installs
+      - ${HOST_PROJECT_PATH:-./host-project}/node_modules:/workspace/host-project/node_modules:cached
+    restart: unless-stopped
+    networks:
+      - acacia-network
+    # Connect to host network to communicate with existing app
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+  # Optional: Lightweight database for agent state (not required)
+  postgres:
+    image: postgres:15-alpine
+    environment:
+      POSTGRES_DB: acacia
+      POSTGRES_USER: acacia
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-acacia_password}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    networks:
+      - acacia-network
+    profiles:
+      - with-db
+  acacia-test-crm:
+    image: acacia-test-crm:latest
+    ports:
+      - "3000:3000"
+
+volumes:
+  acacia-workspace:
+  postgres-data:
+
+networks:
+  acacia-network:
+    driver: bridge

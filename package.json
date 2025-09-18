@@ -20,7 +20,14 @@
     "typescript": "^5"
   },
   "dependencies": {
-    "drizzle-orm": "^0.44.4",
-    "postgres": "^3.4.7"
+    "@libsql/client": "^0.15.15",
+    "@types/dockerode": "^3.3.43",
+    "@types/ws": "^8.18.1",
+    "dockerode": "^4.0.8",
+    "drizzle-orm": "^0.44.5",
+    "hono": "^4.9.6",
+    "openai": "^5.20.1",
+    "postgres": "^3.4.7",
+    "ws": "^8.18.3"
   }
 }

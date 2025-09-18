@@ -1,264 +1,460 @@
-import { drizzle } from "drizzle-orm/postgres-js";
-import postgres from "postgres";
-import { eq, and, desc, asc } from "drizzle-orm";
+import { BunSQLDatabase, drizzle } from "drizzle-orm/bun-sql";
+import { migrate } from "drizzle-orm/bun-sql/migrator";
+import { SQL } from "bun";
+import { eq, and, sql } from "drizzle-orm";
 import * as schema from "./schema";
+import path from "path";
 
-// Database connection
-const connectionString =
-  process.env.DATABASE_URL ||
-  "postgresql://user:password@localhost:5432/extension_proxy";
-const client = postgres(connectionString);
-export const db = drizzle(client, { schema });
+// Database connection interface
+interface DatabaseConnection {
+  db: BunSQLDatabase<typeof schema>;
+  client: Bun.SQL;
+  close: () => Promise<void>;
+  migrate: () => Promise<void>;
+}
 
-// Extension queries
-export class ExtensionService {
-  // Get all active extensions for an application
-  async getActiveExtensions(applicationId: string) {
-    return await db.query.extensions.findMany({
-      where: and(
-        eq(schema.extensions.applicationId, applicationId),
-        eq(schema.extensions.enabled, true),
-      ),
-      with: {
-        routes: true,
-      },
-      orderBy: [asc(schema.extensions.createdAt)],
-    });
+class DatabaseClient {
+  private connection: DatabaseConnection | null = null;
+  private migrationPath: string;
+
+  constructor() {
+    this.migrationPath = path.join(__dirname, "migrations");
   }
 
-  // Get extensions that match a specific route
-  async getExtensionsForRoute(
-    applicationId: string,
-    method: string,
-    path: string,
-  ) {
-    const extensions = await this.getActiveExtensions(applicationId);
-
-    return extensions
-      .filter((extension) =>
-        extension.routes.some((route) =>
-          this.routeMatches(route, method, path),
-        ),
-      )
-      .sort((a, b) => {
-        // Sort by priority (higher first)
-        const aPriority = Math.max(...a.routes.map((r) => r.priority || 0));
-        const bPriority = Math.max(...b.routes.map((r) => r.priority || 0));
-        return bPriority - aPriority;
-      });
+  async initialize(): Promise<void> {
+    try {
+      await this.initializePostgreSQL();
+      console.log("✅ PostgreSQL database initialized");
+    } catch (error) {
+      console.error("❌ Database initialization failed:", error);
+      throw error;
+    }
   }
 
-  // Check if a route matches the request
-  private routeMatches(
-    route: schema.ExtensionRoute,
-    method: string,
-    path: string,
-  ): boolean {
-    // Check method match (or wildcard)
-    if (route.method !== "*" && route.method !== method) {
-      return false;
+  private async initializePostgreSQL(): Promise<void> {
+    const DATABASE_URL = process.env.DATABASE_URL;
+
+    if (!DATABASE_URL) {
+      throw new Error("DATABASE_URL is required for PostgreSQL");
     }
 
-    // Check path match based on pattern type
-    switch (route.patternType) {
-      case "exact":
-        return route.pathPattern === path;
+    // Parse connection string or use default for development
+    const connectionString = DATABASE_URL.startsWith("postgresql://")
+      ? DATABASE_URL
+      : `postgresql://localhost:5432/${DATABASE_URL}`;
 
-      case "prefix":
-        return path.startsWith(route.pathPattern);
+    const client = new SQL(connectionString, {
+      max: 10, // Connection pool size
+      idle_timeout: 20,
+      connect_timeout: 10,
+      ssl:
+        process.env.NODE_ENV === "production"
+          ? { rejectUnauthorized: false }
+          : false,
+    });
 
-      case "regex":
-        try {
-          const regex = new RegExp(route.pathPattern);
-          return regex.test(path);
-        } catch {
-          return false;
+    const db = drizzle({ client, schema });
+
+    this.connection = {
+      db,
+      client,
+      close: async () => {
+        await client.end();
+      },
+      migrate: async () => {
+        await migrate(db, { migrationsFolder: this.migrationPath });
+      },
+    };
+
+    // Test connection
+    await client`SELECT 1 as test`;
+    console.log(`🐘 Connected to PostgreSQL database`);
+  }
+
+  get db() {
+    if (!this.connection) {
+      throw new Error("Database not initialized. Call initialize() first.");
+    }
+    return this.connection.db;
+  }
+
+  async close(): Promise<void> {
+    if (this.connection) {
+      await this.connection.close();
+      this.connection = null;
+    }
+  }
+
+  async runMigrations(): Promise<void> {
+    if (!this.connection) {
+      throw new Error("Database not initialized. Call initialize() first.");
+    }
+
+    try {
+      await this.connection.migrate();
+      console.log("✅ Database migrations completed");
+    } catch (error) {
+      console.error("❌ Database migration failed:", error);
+      throw error;
+    }
+  }
+
+  // Extension-specific database operations
+  async createExtensionTable(
+    tableName: string,
+    schemaDefinition: any,
+  ): Promise<void> {
+    const columns = Object.entries(schemaDefinition)
+      .map(([name, config]: [string, any]) => {
+        let columnDef = `${name}`;
+
+        // Map types for PostgreSQL
+        switch (config.type) {
+          case "text":
+            columnDef += " TEXT";
+            break;
+          case "integer":
+            columnDef += " INTEGER";
+            break;
+          case "boolean":
+            columnDef += " BOOLEAN";
+            break;
+          case "timestamp":
+            columnDef += " TIMESTAMP";
+            break;
+          case "jsonb":
+          case "json":
+            columnDef += " JSONB";
+            break;
+          case "uuid":
+            columnDef += " UUID";
+            break;
+          default:
+            columnDef += " TEXT";
         }
 
-      default:
-        return false;
+        if (!config.nullable) columnDef += " NOT NULL";
+        if (config.unique) columnDef += " UNIQUE";
+        if (config.default !== undefined) {
+          if (typeof config.default === "string") {
+            columnDef += ` DEFAULT '${config.default}'`;
+          } else {
+            columnDef += ` DEFAULT ${config.default}`;
+          }
+        }
+
+        return columnDef;
+      })
+      .join(", ");
+
+    const createTableSQL = `
+      CREATE TABLE IF NOT EXISTS ${tableName} (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        created_at TIMESTAMP DEFAULT NOW(),
+        updated_at TIMESTAMP DEFAULT NOW()
+        ${columns ? ", " + columns : ""}
+      )
+    `;
+
+    await this.db.execute(sql.raw(createTableSQL));
+    console.log(`📋 Created extension table: ${tableName}`);
+  }
+
+  async dropExtensionTable(tableName: string): Promise<void> {
+    await this.db.execute(sql.raw(`DROP TABLE IF EXISTS ${tableName}`));
+    console.log(`🗑️ Dropped extension table: ${tableName}`);
+  }
+
+  // Health check
+  async healthCheck(): Promise<{
+    healthy: boolean;
+    type: string;
+    timestamp: Date;
+    connectionCount?: number;
+  }> {
+    try {
+      const result = await this.db.execute(sql`SELECT 1 as health_check`);
+
+      return {
+        healthy: true,
+        type: "postgresql",
+        timestamp: new Date(),
+      };
+    } catch (error) {
+      console.error("Database health check failed:", error);
+      return {
+        healthy: false,
+        type: "postgresql",
+        timestamp: new Date(),
+      };
     }
   }
 
-  // Create a new extension
-  async createExtension(
-    data: schema.NewExtension & {
-      routes: Omit<schema.NewExtensionRoute, "extensionId">[];
-    },
-  ) {
-    return await db.transaction(async (tx) => {
-      // Create the extension
-      const [extension] = await tx
-        .insert(schema.extensions)
-        .values({
-          applicationId: data.applicationId,
-          name: data.name,
-          description: data.description,
-          code: data.code,
-          enabled: data.enabled,
-          createdBy: data.createdBy,
-        })
-        .returning();
-
-      // Create the routes
-      if (data.routes.length > 0) {
-        await tx.insert(schema.extensionRoutes).values(
-          data.routes.map((route) => ({
-            ...route,
-            extensionId: extension.id,
-          })),
-        );
-      }
-
-      // Create initial version
-      await tx.insert(schema.extensionVersions).values({
-        extensionId: extension.id,
-        version: 1,
-        code: data.code,
-        changeDescription: "Initial version",
-        createdBy: data.createdBy,
-      });
-
-      return extension;
-    });
-  }
-
-  // Update extension code and create new version
-  async updateExtension(
-    extensionId: string,
-    code: string,
-    changeDescription?: string,
-    updatedBy?: string,
-  ) {
-    return await db.transaction(async (tx) => {
-      // Get current extension
-      const extension = await tx.query.extensions.findFirst({
-        where: eq(schema.extensions.id, extensionId),
-      });
-
-      if (!extension) {
-        throw new Error("Extension not found");
-      }
-
-      // Update the extension
-      const [updatedExtension] = await tx
-        .update(schema.extensions)
-        .set({
-          code,
-          version: extension.version + 1,
-          updatedAt: new Date(),
-        })
-        .where(eq(schema.extensions.id, extensionId))
-        .returning();
-
-      // Create new version record
-      await tx.insert(schema.extensionVersions).values({
-        extensionId,
-        version: updatedExtension.version,
-        code,
-        changeDescription,
-        createdBy: updatedBy,
-      });
-
-      return updatedExtension;
-    });
-  }
-
-  // Log extension execution
-  async logExecution(data: schema.NewExtensionLog) {
-    return await db.insert(schema.extensionLogs).values(data);
-  }
-
-  // Record API endpoint discovery
-  async recordApiEndpoint(
-    applicationId: string,
-    method: string,
-    path: string,
-    requestData?: any,
-    responseData?: any,
-  ) {
-    // Try to find existing endpoint
-    const existing = await db.query.apiEndpoints.findFirst({
-      where: and(
-        eq(schema.apiEndpoints.applicationId, applicationId),
-        eq(schema.apiEndpoints.method, method),
-        eq(schema.apiEndpoints.path, path),
-      ),
-    });
-
-    if (existing) {
-      // Update hit count and last seen
-      await db
-        .update(schema.apiEndpoints)
-        .set({
-          hitCount: existing.hitCount + 1,
-          lastSeen: new Date(),
-          // Update samples if provided
-          ...(requestData && { sampleRequest: requestData }),
-          ...(responseData && { sampleResponse: responseData }),
-        })
-        .where(eq(schema.apiEndpoints.id, existing.id));
-    } else {
-      // Create new endpoint record
-      await db.insert(schema.apiEndpoints).values({
-        applicationId,
-        method,
-        path,
-        sampleRequest: requestData,
-        sampleResponse: responseData,
-        hitCount: 1,
-      });
-    }
-  }
-
-  // Get API endpoints for exploration
-  async getApiEndpoints(applicationId: string) {
-    return await db.query.apiEndpoints.findMany({
-      where: eq(schema.apiEndpoints.applicationId, applicationId),
-      orderBy: [
-        desc(schema.apiEndpoints.hitCount),
-        desc(schema.apiEndpoints.lastSeen),
-      ],
-    });
-  }
-
-  // Get extension execution logs
-  async getExtensionLogs(extensionId: string, limit = 100) {
-    return await db.query.extensionLogs.findMany({
-      where: eq(schema.extensionLogs.extensionId, extensionId),
-      orderBy: [desc(schema.extensionLogs.createdAt)],
-      limit,
-    });
-  }
-
-  // Rollback to previous version
-  async rollbackExtension(extensionId: string, targetVersion: number) {
-    return await db.transaction(async (tx) => {
-      // Get the target version
-      const version = await tx.query.extensionVersions.findFirst({
-        where: and(
-          eq(schema.extensionVersions.extensionId, extensionId),
-          eq(schema.extensionVersions.version, targetVersion),
-        ),
-      });
-
-      if (!version) {
-        throw new Error("Version not found");
-      }
-
-      // Update extension with old code
-      const [updatedExtension] = await tx
-        .update(schema.extensions)
-        .set({
-          code: version.code,
-          updatedAt: new Date(),
-        })
-        .where(eq(schema.extensions.id, extensionId))
-        .returning();
-
-      return updatedExtension;
-    });
+  // Transaction support
+  async transaction<T>(callback: (tx: any) => Promise<T>): Promise<T> {
+    return await this.db.transaction(callback);
   }
 }
 
-export const extensionService = new ExtensionService();
+// Create singleton instance
+const dbClient = new DatabaseClient();
+
+// Initialize database connection
+let dbInitialized = false;
+
+export const initializeDatabase = async (): Promise<void> => {
+  if (!dbInitialized) {
+    await dbClient.initialize();
+
+    // Run migrations if AUTO_MIGRATE is enabled
+    if (process.env.AUTO_MIGRATE !== "false") {
+      try {
+        await dbClient.runMigrations();
+      } catch (error) {
+        console.warn(
+          "⚠️ Migration failed (this might be expected for first run):",
+          error,
+        );
+      }
+    }
+
+    dbInitialized = true;
+  }
+};
+
+// Extension service for managing user extensions
+export const extensionService = {
+  // Get active extensions for a user
+  async getActiveExtensions(userId: string, appId: string) {
+    return await dbClient.db
+      .select({
+        extension: schema.extensions,
+        userExtension: schema.userExtensions,
+        components: schema.components,
+        functions: schema.functions,
+        routes: schema.routes,
+      })
+      .from(schema.userExtensions)
+      .innerJoin(
+        schema.extensions,
+        eq(schema.userExtensions.extensionId, schema.extensions.id),
+      )
+      .leftJoin(
+        schema.components,
+        eq(schema.extensions.id, schema.components.extensionId),
+      )
+      .leftJoin(
+        schema.functions,
+        eq(schema.extensions.id, schema.functions.extensionId),
+      )
+      .leftJoin(
+        schema.routes,
+        eq(schema.functions.id, schema.routes.functionId),
+      )
+      .where(
+        and(
+          eq(schema.userExtensions.userId, userId),
+          eq(schema.userExtensions.isEnabled, true),
+          eq(schema.extensions.appId, appId),
+        ),
+      );
+  },
+
+  // Install extension for user
+  async installExtension(userId: string, extensionId: string, config?: any) {
+    return await dbClient.transaction(async (tx) => {
+      // Check if extension exists
+      const extension = await tx
+        .select()
+        .from(schema.extensions)
+        .where(eq(schema.extensions.id, extensionId))
+        .limit(1);
+
+      if (!extension.length) {
+        throw new Error("Extension not found");
+      }
+
+      // Check if already installed
+      const existing = await tx
+        .select()
+        .from(schema.userExtensions)
+        .where(
+          and(
+            eq(schema.userExtensions.userId, userId),
+            eq(schema.userExtensions.extensionId, extensionId),
+          ),
+        )
+        .limit(1);
+
+      if (existing.length) {
+        throw new Error("Extension already installed");
+      }
+
+      // Create extension data table if needed
+      let dataTableName: string | undefined;
+      const extensionSchemas = await tx
+        .select()
+        .from(schema.extensionSchemas)
+        .where(eq(schema.extensionSchemas.extensionId, extensionId));
+
+      if (extensionSchemas.length > 0) {
+        const timestamp = Date.now();
+        dataTableName = `ext_${userId.replace(/-/g, "_")}_${extensionId.replace(/-/g, "_")}_${timestamp}`;
+
+        for (const schemaData of extensionSchemas) {
+          if (schemaData.schema) {
+            await dbClient.createExtensionTable(
+              dataTableName,
+              schemaData.schema,
+            );
+          }
+        }
+      }
+
+      // Install extension
+      const result = await tx
+        .insert(schema.userExtensions)
+        .values({
+          userId,
+          extensionId,
+          config,
+          dataTableName,
+          isEnabled: true,
+        })
+        .returning();
+
+      // Update install count
+      await tx
+        .update(schema.extensions)
+        .set({
+          installCount: sql`${schema.extensions.installCount} + 1`,
+          updatedAt: new Date(),
+        })
+        .where(eq(schema.extensions.id, extensionId));
+
+      return result[0];
+    });
+  },
+
+  // Uninstall extension for user
+  async uninstallExtension(userId: string, extensionId: string) {
+    return await dbClient.transaction(async (tx) => {
+      const userExtension = await tx
+        .select()
+        .from(schema.userExtensions)
+        .where(
+          and(
+            eq(schema.userExtensions.userId, userId),
+            eq(schema.userExtensions.extensionId, extensionId),
+          ),
+        )
+        .limit(1);
+
+      if (!userExtension.length) {
+        throw new Error("Extension not installed");
+      }
+
+      // Drop extension data table
+      if (userExtension[0].dataTableName) {
+        await dbClient.dropExtensionTable(userExtension[0].dataTableName);
+      }
+
+      // Remove installation record
+      await tx
+        .delete(schema.userExtensions)
+        .where(
+          and(
+            eq(schema.userExtensions.userId, userId),
+            eq(schema.userExtensions.extensionId, extensionId),
+          ),
+        );
+
+      // Update install count
+      await tx
+        .update(schema.extensions)
+        .set({
+          installCount: sql`GREATEST(${schema.extensions.installCount} - 1, 0)`,
+          updatedAt: new Date(),
+        })
+        .where(eq(schema.extensions.id, extensionId));
+
+      return { success: true };
+    });
+  },
+
+  // Get extension marketplace listings
+  async getMarketplaceExtensions(appId: string, limit = 20, offset = 0) {
+    return await dbClient.db
+      .select({
+        extension: schema.extensions,
+      })
+      .from(schema.extensions)
+      .where(
+        and(
+          eq(schema.extensions.appId, appId),
+          eq(schema.extensions.isPublic, true),
+          eq(schema.extensions.status, "published"),
+        ),
+      )
+      .groupBy(schema.extensions.id)
+      .orderBy(sql`${schema.extensions.installCount} DESC`)
+      .limit(limit)
+      .offset(offset);
+  },
+
+  // Create a new extension (for developers)
+  async createExtension(data: schema.NewExtension) {
+    return await dbClient.db.insert(schema.extensions).values(data).returning();
+  },
+
+  // Get extension by slug
+  async getExtensionBySlug(slug: string, appId: string) {
+    return await dbClient.db.query.extensions.findFirst({
+      where: and(
+        eq(schema.extensions.slug, slug),
+        eq(schema.extensions.appId, appId),
+      ),
+      with: {
+        components: true,
+        functions: {
+          with: {
+            routes: true,
+          },
+        },
+        schemas: true,
+      },
+    });
+  },
+
+  // Log function execution
+  async logFunctionExecution(data: schema.NewFunctionLog) {
+    return await dbClient.db.insert(schema.functionLogs).values(data);
+  },
+
+  // Get function execution logs
+  async getFunctionLogs(functionId: string, limit = 100) {
+    return await dbClient.db
+      .select()
+      .from(schema.functionLogs)
+      .where(eq(schema.functionLogs.functionId, functionId))
+      .orderBy(sql`${schema.functionLogs.createdAt} DESC`)
+      .limit(limit);
+  },
+};
+
+// Export everything
+export { schema, dbClient };
+export default dbClient.db;
+
+// Graceful shutdown
+process.on("SIGINT", async () => {
+  console.log("🔄 Shutting down database connection...");
+  await dbClient.close();
+  process.exit(0);
+});
+
+process.on("SIGTERM", async () => {
+  console.log("🔄 Shutting down database connection...");
+  await dbClient.close();
+  process.exit(0);
+});
