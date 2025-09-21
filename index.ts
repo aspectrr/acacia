@@ -2,9 +2,10 @@ import { Hono } from "hono";
 import OpenAI from "openai";
 import {
   workspaceManager,
-  ComponentSpec,
-  FunctionSpec,
+  type ComponentSpec,
+  type FunctionSpec,
 } from "./services/workspaceManager";
+import { transpileManager } from "./services/transpileManager";
 import { initializeDatabase, extensionService } from "./db/client";
 
 const app = new Hono();
@@ -15,8 +16,7 @@ const openrouter = new OpenAI({
   apiKey: process.env.OPENROUTER_API_KEY,
   defaultHeaders: {
     "HTTP-Referer": process.env.YOUR_SITE_URL || "http://localhost:3000",
-    "X-Title":
-      process.env.YOUR_SITE_NAME || "Acacia React/Serverless Agent Platform",
+    "X-Title": process.env.YOUR_SITE_NAME || "Acacia",
   },
 });
 
@@ -26,10 +26,10 @@ const chatSessions = new Map();
 
 // Specialized agent types for React/Serverless development
 const AGENT_MODELS = {
-  "react-developer": "anthropic/claude-3.5-sonnet",
-  "serverless-developer": "anthropic/claude-3.5-sonnet",
-  "fullstack-developer": "anthropic/claude-3-opus",
-  "database-engineer": "openai/gpt-4-turbo",
+  react: "anthropic/claude-3.5-sonnet",
+  serverless: "anthropic/claude-3.5-sonnet",
+  fullstack: "anthropic/claude-3-opus",
+  database: "openai/gpt-4-turbo",
 };
 
 interface Agent {
@@ -67,7 +67,7 @@ interface ChatMessage {
 
 // Enhanced system prompts for React/Serverless development
 const SYSTEM_PROMPTS = {
-  "react-developer": `You are an expert React component developer agent working in a containerized Node.js/TypeScript environment.
+  react: `You are an expert React component developer agent working in a containerized Node.js/TypeScript environment.
 
 Your capabilities:
 - Build React components in TypeScript with proper prop interfaces
@@ -91,7 +91,7 @@ When building components:
 
 You can execute commands in your container and access the file system. Always validate your work by running TypeScript checks and builds.`,
 
-  "serverless-developer": `You are an expert serverless function developer agent working in a Node.js/TypeScript environment.
+  serverless: `You are an expert serverless function developer agent working in a Node.js/TypeScript environment.
 
 Your capabilities:
 - Build serverless functions in TypeScript
@@ -116,7 +116,7 @@ When building functions:
 
 You can execute commands in your container and access the database. Always validate your work by running TypeScript checks.`,
 
-  "fullstack-developer": `You are an expert fullstack developer agent capable of building complete React components with serverless backends.
+  fullstack: `You are an expert fullstack developer agent capable of building complete React components with serverless backends.
 
 Your capabilities:
 - Build React components that integrate with serverless functions
@@ -137,7 +137,7 @@ When building fullstack features:
 
 You coordinate between component and function development, ensuring they work together seamlessly.`,
 
-  "database-engineer": `You are an expert database engineer agent specializing in Drizzle ORM and PostgreSQL.
+  database: `You are an expert database engineer agent specializing in Drizzle ORM and PostgreSQL.
 
 Your capabilities:
 - Design database schemas with Drizzle ORM
@@ -265,11 +265,13 @@ async function parseAgentResponse(
 
     if (filename && (language === "tsx" || language === "ts")) {
       try {
-        await containerManager.writeFile(agentId, filename, code.trim());
+        const transpiledCode = await transpileManager.transpile(code!, {
+          strictMode: true,
+        });
         attachments.push({
           type: filename.includes("components/") ? "component" : "function",
           filename,
-          content: code.trim(),
+          content: code?.trim(),
         });
       } catch (error) {
         console.error(
@@ -724,19 +726,16 @@ app.post("/agents/:id/execute", async (c) => {
 
 const port = parseInt(process.env.PORT || "8080");
 
-console.log(
-  `🚀 Acacia React/Serverless Agent Platform running on http://localhost:${port}`,
-);
-console.log(`🤖 Specialized agents: ${Object.keys(AGENT_MODELS).join(", ")}`);
-console.log(`🐳 Docker-based development environments ready`);
+console.log(`Acacia running on http://localhost:${port}`);
+console.log(`Specialized agents: ${Object.keys(AGENT_MODELS).join(", ")}`);
 
 // Create some default agents on startup after platform initialization
 setTimeout(async () => {
   try {
     await Promise.all([
-      createAgent("ReactBot", "react-developer"),
-      createAgent("ServerlessBot", "serverless-developer"),
-      createAgent("FullStackBot", "fullstack-developer"),
+      createAgent("ReactBot", "react"),
+      createAgent("ServerlessBot", "serverless"),
+      createAgent("FullStackBot", "fullstack"),
     ]);
     console.log(`✅ Default agents created with workspaces`);
   } catch (error) {

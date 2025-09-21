@@ -1,4 +1,4 @@
-import type { Context, Next } from "hono";
+import type { Context, Next, HonoRequest } from "hono";
 import db from "../db/client";
 import {
   users,
@@ -69,7 +69,7 @@ export class ExtensionMiddleware {
   ) {}
 
   // Main middleware function
-  async handle(c: Context, next: Next): Promise<void> {
+  async handle(c: Context, next: Next): Promise<Response | void> {
     try {
       // Extract user context (assuming auth middleware provides this)
       const userId = c.req.header("x-user-id") as string;
@@ -77,96 +77,71 @@ export class ExtensionMiddleware {
         return next(); // No user, pass through to original app
       }
 
+      // Parse request body (await as needed)
+      let reqBody: any = undefined;
+      const contentType = c.req.header("content-type") || "";
+      if (contentType.includes("application/json")) {
+        reqBody = await c.req.json().catch(() => undefined);
+      } else if (contentType.includes("text/plain")) {
+        reqBody = await c.req.text().catch(() => undefined);
+      } else if (
+        contentType.includes("application/x-www-form-urlencoded") ||
+        contentType.includes("multipart/form-data")
+      ) {
+        const formData = await c.req.formData().catch(() => undefined);
+        reqBody = formData ? Object.fromEntries(formData.entries()) : undefined;
+      }
+
+      // Build initial extension context
       const context: ExtensionContext = {
         userId,
         appId: this.appId,
         request: {
           method: c.req.method,
           path: c.req.path,
-          query: c.req.query as Record<string, any>,
-          body: c.req.raw.body?.json(),
-          headers: c.req.raw.headers.toJSON() as Record<string, string>,
+          query: { ...c.req.query() },
+          body: reqBody,
+          headers: Object.fromEntries(c.req.raw.headers.entries()),
         },
         database: this.createDatabaseInterface(userId),
       };
 
-      // 1. Check for matching extensions
+      // 1. Find matching extensions
       const matchingExtensions = await this.findMatchingExtensions(context);
-
       if (matchingExtensions.length === 0) {
         return next(); // No extensions, pass through
       }
 
-      // 2. Execute "before" functions
+      // 2. Execute "before" functions (request mutators)
       const beforeResults = await this.executeFunctions(
-        matchingExtensions.filter((ext) => ext.type === "before"),
+        matchingExtensions.filter((ext) => ext.functionType === "before"),
         context,
       );
 
-      // Update context with any modifications from before functions
-      if (beforeResults.some((r) => r.success && r.data)) {
-        const newHeaders = new Headers(c.req.header());
-        const contentType = c.req.header("content-type");
-        let newBody;
-
-        if (contentType?.includes("application/json")) {
-          // Parse as JSON
-          newBody = await c.req.json().catch(() => null);
-        } else if (contentType?.includes("text/plain")) {
-          // Parse as text
-          newBody = await c.req.text().catch(() => null);
-        } else if (contentType?.includes("application/x-www-form-urlencoded")) {
-          // Parse as form data
-          const formData = await c.req.formData().catch(() => null);
-          newBody = Object.fromEntries(formData?.entries() || []);
-        } else if (contentType?.includes("multipart/form-data")) {
-          // Parse as multipart form data
-          const formData = await c.req.formData().catch(() => null);
-          newBody = Object.fromEntries(formData?.entries() || []);
-        } else {
-          // Default: parse as text or reject
-          newBody = await c.req.text().catch(() => null);
+      // Apply modifications from "before" extensions to the request context
+      for (const result of beforeResults) {
+        if (result.success && result.data) {
+          if (result.data.headers) {
+            Object.assign(context.request.headers, result.data.headers);
+          }
+          if (result.data.body) {
+            context.request.body = {
+              ...context.request.body,
+              ...result.data.body,
+            };
+          }
+          if (result.data.query) {
+            context.request.query = {
+              ...context.request.query,
+              ...result.data.query,
+            };
+          }
         }
-
-        const modifications: Record<string, any> = beforeResults
-          .filter((r) => r.success && r.data)
-          .reduce((acc, r) => ({ ...acc, ...r.data }), {});
-
-        if (modifications?.headers) {
-          Object.assign(newHeaders, modifications.headers);
-        }
-        if (modifications.body) {
-          newBody = { ...newBody, ...modifications.body };
-        }
-        if (modifications.query) {
-          c.req.query = { ...c.req.query, ...modifications.query };
-        }
-
-        // Re-serialize the merged body based on the original Content-Type
-        let updatedBody;
-        if (contentType?.includes("application/json")) {
-          updatedBody = JSON.stringify(newBody);
-        } else if (contentType?.includes("text/plain")) {
-          updatedBody = newBody.text || JSON.stringify(newBody);
-        } else if (contentType?.includes("application/x-www-form-urlencoded")) {
-          updatedBody = new URLSearchParams(newBody).toString();
-        } else {
-          updatedBody = JSON.stringify(newBody);
-        }
-
-        // Create a new Request with the updated body and original Content-Type
-        const url = new URL(c.req.url);
-
-        const newRequest = new Request(url.toString(), {
-          method: c.req.method,
-          headers: newHeaders,
-          body: updatedBody,
-        });
       }
 
       // 3. Check for "replace" functions (completely override the route)
       const replaceExtensions = matchingExtensions.filter(
-        (ext) => ext.type === "replace",
+        (ext) => ext.functionType === "replace",
       );
       if (replaceExtensions.length > 0) {
         const replaceResult = await this.executeFunctions(
@@ -176,39 +151,76 @@ export class ExtensionMiddleware {
         const successfulReplace = replaceResult.find((r) => r.success);
 
         if (successfulReplace) {
-          return this.sendResponse(res, successfulReplace.data, context);
+          // Send the replaced response directly
+          c.status(successfulReplace.data?.status || 200);
+          if (successfulReplace.data?.headers) {
+            const newHeaders = Object.fromEntries(
+              Object.entries(successfulReplace.data.headers).map(([k, v]) => [
+                k.toLowerCase(),
+                v,
+              ]),
+            ) as Record<string, string>;
+            for (const [k, v] of Object.entries(newHeaders)) {
+              c.header(k, v);
+            }
+          }
+          return c.json(successfulReplace.data?.body ?? successfulReplace.data);
         }
       }
 
-      // 4. Proxy to original application
-      const originalResponse = await this.proxyToOriginal(c.req, context);
-      context.response = originalResponse;
-
-      // 5. Execute "after" and "transform" functions
-      const afterExtensions = matchingExtensions.filter(
-        (ext) => ext.type === "after" || ext.type === "transform",
+      // 4. Proxy to original application (with possibly modified request)
+      const proxiedResponse = await this.proxyToOriginal(
+        {
+          method: context.request.method,
+          path: context.request.path,
+          headers: context.request.headers,
+          body: context.request.body,
+          url: c.req.url,
+        } as any, // HonoRequest shape
+        context,
       );
+      context.response = proxiedResponse;
 
+      // 5. Execute "after"/"transform" functions (response mutators)
+      const afterExtensions = matchingExtensions.filter(
+        (ext) =>
+          ext.functionType === "after" || ext.functionType === "transform",
+      );
       const afterResults = await this.executeFunctions(
         afterExtensions,
         context,
       );
 
-      // 6. Merge results
-      const finalData = this.mergeResults(originalResponse.data, afterResults);
+      // 6. Merge results into the response
+      let finalData = this.mergeResults(proxiedResponse.data, afterResults);
 
       // 7. Inject components for this route
-      const components = await this.getComponentsForRoute(userId, req.path);
-      const responseWithComponents = this.injectComponents(
-        finalData,
-        components,
+      const components = await this.getComponentsForRoute(
+        userId,
+        context.request.path,
       );
+      finalData = this.injectComponents(finalData, components);
 
-      // 8. Send final response
-      this.sendResponse(res, responseWithComponents, context);
+      // 8. Apply any response modifications from after extensions
+      let finalStatus = proxiedResponse.status;
+      let finalHeaders: Record<string, string> = { ...proxiedResponse.headers };
+      for (const result of afterResults) {
+        if (result.success && result.data) {
+          if (result.data.status) finalStatus = result.data.status;
+          if (result.data.headers)
+            Object.assign(finalHeaders, result.data.headers);
+        }
+      }
+
+      // 9. Send final response
+      for (const [k, v] of Object.entries(finalHeaders)) {
+        c.header(k, v);
+      }
+      c.status(finalStatus || 200);
+      return c.json(finalData);
     } catch (error) {
       console.error("Extension middleware error:", error);
-      next(error);
+      await next();
     }
   }
 
@@ -420,10 +432,18 @@ export class ExtensionMiddleware {
     return result.transpiledCode;
   }
 
+  private safeIdentifier(name: string) {
+    // Only allow letters, numbers, and underscores in identifiers
+    if (!/^[a-zA-Z0-9_]+$/.test(name)) {
+      throw new Error(`Invalid identifier: ${name}`);
+    }
+    return sql.raw(name); // mark it as safe SQL
+  }
+
   // Create database interface for extensions
   private createDatabaseInterface(userId: string) {
     return {
-      query: async (sqlQuery: string, params: any[] = []) => {
+      query: async (sqlQuery: string) => {
         // Only allow queries on user-specific extension tables
         const allowedTables = await this.getUserExtensionTables(userId);
 
@@ -432,23 +452,23 @@ export class ExtensionMiddleware {
           throw new Error("Unauthorized database access");
         }
 
-        return await db.execute(sql.raw(sqlQuery, params));
+        return await db.execute(sql.raw(sqlQuery));
       },
 
       insert: async (tableName: string, data: Record<string, any>) => {
         await this.validateTableAccess(userId, tableName);
         const fullTableName = `ext_${userId}_${tableName}`;
 
-        return await db.execute(
-          sql.raw(
-            `INSERT INTO ${fullTableName} (${Object.keys(data).join(", ")}) VALUES (${Object.keys(
-              data,
-            )
-              .map(() => "?")
-              .join(", ")})`,
-            Object.values(data),
-          ),
-        );
+        const table = this.safeIdentifier(fullTableName);
+        const columns = Object.keys(data).map(this.safeIdentifier);
+        const values = Object.values(data);
+
+        const query = sql`
+          insert into ${table} (${sql.join(columns, sql.raw(", "))})
+          values (${sql.join(values, sql.raw(", "))})
+        `;
+
+        return await db.execute(query);
       },
 
       update: async (
@@ -459,35 +479,38 @@ export class ExtensionMiddleware {
         await this.validateTableAccess(userId, tableName);
         const fullTableName = `ext_${userId}_${tableName}`;
 
-        const setClause = Object.keys(data)
-          .map((key) => `${key} = ?`)
-          .join(", ");
-        const whereClause = Object.keys(where)
-          .map((key) => `${key} = ?`)
-          .join(" AND ");
-
-        return await db.execute(
-          sql.raw(
-            `UPDATE ${fullTableName} SET ${setClause} WHERE ${whereClause}`,
-            [...Object.values(data), ...Object.values(where)],
-          ),
+        const table = this.safeIdentifier(fullTableName);
+        const setPairs = Object.entries(data).map(
+          ([key, value]) => sql`${this.safeIdentifier(key)} = ${value}`,
         );
+        const wherePairs = Object.entries(where).map(
+          ([key, value]) => sql`${this.safeIdentifier(key)} = ${value}`,
+        );
+
+        const query = sql`
+          update ${table}
+          set ${sql.join(setPairs, sql.raw(", "))}
+          where ${sql.join(wherePairs, sql.raw(" and "))}
+        `;
+
+        return await db.execute(query);
       },
 
       delete: async (tableName: string, where: Record<string, any>) => {
         await this.validateTableAccess(userId, tableName);
         const fullTableName = `ext_${userId}_${tableName}`;
 
-        const whereClause = Object.keys(where)
-          .map((key) => `${key} = ?`)
-          .join(" AND ");
-
-        return await db.execute(
-          sql.raw(
-            `DELETE FROM ${fullTableName} WHERE ${whereClause}`,
-            Object.values(where),
-          ),
+        const table = this.safeIdentifier(fullTableName);
+        const wherePairs = Object.entries(where).map(
+          ([key, value]) => sql`${this.safeIdentifier(key)} = ${value}`,
         );
+
+        const query = sql`
+          delete from ${table}
+          where ${sql.join(wherePairs, sql.raw(" and "))}
+        `;
+
+        return await db.execute(query);
       },
     };
   }
@@ -502,10 +525,10 @@ export class ExtensionMiddleware {
 
       const response = await fetch(url, {
         method: req.method,
-        headers: req.headers as HeadersInit,
+        headers: req.raw.headers,
         body:
           req.method !== "GET" && req.method !== "HEAD"
-            ? JSON.stringify(req.body)
+            ? JSON.stringify(req.raw.body)
             : undefined,
       });
 
@@ -527,14 +550,14 @@ export class ExtensionMiddleware {
     userId: string,
     route: string,
   ): Promise<ComponentInjection[]> {
-    const components = await db
+    const userComponents = await db
       .select({
         id: components.id,
         code: components.code,
         props: components.props,
         placement: components.placement,
       })
-      .from(userExtensions)
+      .from(components)
       .innerJoin(extensions, eq(userExtensions.extensionId, extensions.id))
       .innerJoin(components, eq(extensions.id, components.extensionId))
       .where(
@@ -545,7 +568,7 @@ export class ExtensionMiddleware {
       );
 
     // Filter components that match the current route
-    return components
+    return userComponents
       .filter(
         (comp) =>
           !comp.placement?.route ||
@@ -692,11 +715,31 @@ export class ExtensionMiddleware {
     const tables: string[] = [];
 
     if (fromMatches) {
-      tables.push(...fromMatches.map((match) => match.split(/\s+/)[1]));
+      tables.push(
+        ...fromMatches
+          .map((match) => {
+            if (typeof match === "string") {
+              const parts = match.split(/\s+/);
+              return parts[1];
+            }
+            return undefined;
+          })
+          .filter((name): name is string => typeof name === "string" && !!name),
+      );
     }
 
     if (joinMatches) {
-      tables.push(...joinMatches.map((match) => match.split(/\s+/)[1]));
+      tables.push(
+        ...joinMatches
+          .map((match) => {
+            if (typeof match === "string") {
+              const parts = match.split(/\s+/);
+              return parts[1];
+            }
+            return undefined;
+          })
+          .filter((name): name is string => typeof name === "string" && !!name),
+      );
     }
 
     return tables;
@@ -736,15 +779,15 @@ export class ExtensionMiddleware {
   }
 
   // Send final response
-  private sendResponse(data: any, context: ExtensionContext): void {
-    if (context.response?.headers) {
-      Object.entries(context.response.headers).forEach(([key, value]) => {
-        res.setHeader(key, value);
-      });
-    }
+  // private sendResponse(data: any, context: ExtensionContext): void {
+  //   if (context.response?.headers) {
+  //     Object.entries(context.response.headers).forEach(([key, value]) => {
+  //       c.res.setHeader(key, value);
+  //     });
+  //   }
 
-    res.status(context.response?.status || 200).json(data);
-  }
+  //   res.status(context.response?.status || 200).json(data);
+  // }
 
   // Create dynamic extension tables when user installs extension
   async createExtensionTable(

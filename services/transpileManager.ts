@@ -1,5 +1,3 @@
-import type { BuildOutput } from "bun";
-
 export interface TranspileOptions {
   /**
    * Timeout for code execution in milliseconds

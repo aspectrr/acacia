@@ -1,5 +1,4 @@
 # Acacia Sidecar - Attach to any existing product
-version: "3.8"
 
 services:
   acacia:
