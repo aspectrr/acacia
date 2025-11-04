@@ -1,20 +1,19 @@
 # Dockerfile
-FROM oven/bun:1
+FROM node:20-alpine
 
 WORKDIR /app
 
 # Copy package.json and lockfile
-COPY package.json ./
-COPY bun.lock ./
+COPY package*.json ./
 
 # Install dependencies
-RUN bun install
+RUN npm ci || npm install
 
 # Copy source code
 COPY . .
 
 # Expose the proxy port
-EXPOSE 3000
+EXPOSE 8080
 
 # Start the proxy
-CMD ["bun", "run", "start"]
+CMD ["npm", "run", "start"]

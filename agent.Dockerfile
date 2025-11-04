@@ -10,9 +10,7 @@ RUN apk add --no-cache \
     g++ \
     postgresql-client
 
-# Install Bun for fast package management
-RUN curl -fsSL https://bun.sh/install | bash
-ENV PATH="/root/.bun/bin:$PATH"
+# Use Node.js toolchain (Bun removed)
 
 # Create app directory
 WORKDIR /workspace
@@ -24,16 +22,8 @@ RUN mkdir -p /workspace/components \
     /workspace/shared \
     /workspace/output
 
-# Install global development tools
-RUN bun add -g \
-    typescript \
-    @types/node \
-    drizzle-kit \
-    drizzle-orm \
-    vite \
-    @vitejs/plugin-react \
-    eslint \
-    prettier
+# Install global development tools (Node-based)
+RUN npm i -g typescript @types/node drizzle-kit drizzle-orm vite @vitejs/plugin-react eslint prettier tsx esbuild
 
 # Create package.json for the workspace
 COPY <<EOF /workspace/package.json
@@ -44,8 +34,8 @@ COPY <<EOF /workspace/package.json
   "scripts": {
     "dev:component": "vite --config vite.component.config.ts",
     "build:component": "vite build --config vite.component.config.ts",
-    "dev:function": "bun run --hot functions/index.ts",
-    "build:function": "bun build functions/index.ts --outdir output/function",
+    "dev:function": "tsx watch functions/index.ts",
+    "build:function": "esbuild functions/index.ts --bundle --platform=node --format=esm --outdir output/function",
     "db:generate": "drizzle-kit generate",
     "db:migrate": "drizzle-kit migrate",
     "db:studio": "drizzle-kit studio",
@@ -69,7 +59,9 @@ COPY <<EOF /workspace/package.json
     "eslint": "^8.0.0",
     "@typescript-eslint/eslint-plugin": "^6.0.0",
     "@typescript-eslint/parser": "^6.0.0",
-    "prettier": "^3.0.0"
+    "prettier": "^3.0.0",
+    "esbuild": "^0.21.3",
+    "tsx": "^4.7.0"
   }
 }
 EOF
@@ -229,7 +221,7 @@ export interface ApiResponse<T = unknown> {
 EOF
 
 # Install dependencies
-RUN cd /workspace && bun install
+RUN cd /workspace && npm install
 
 # Create a non-root user for security
 RUN addgroup -g 1001 -S agent && \

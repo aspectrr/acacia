@@ -1,17 +1,17 @@
-import { promises as fs } from 'fs';
-import path from 'path';
-import { spawn, exec } from 'child_process';
-import { promisify } from 'util';
+import { promises as fs } from "fs";
+import path from "path";
+import { spawn, exec } from "child_process";
+import { promisify } from "util";
 
 const execAsync = promisify(exec);
 
 export interface AgentWorkspace {
   agentId: string;
   workspacePath: string;
-  status: 'ready' | 'busy' | 'error';
+  status: "ready" | "busy" | "error";
   createdAt: Date;
   lastActivity: Date;
-  projectType: 'react' | 'serverless' | 'fullstack' | 'database';
+  projectType: "react" | "serverless" | "fullstack" | "database";
 }
 
 export interface ComponentSpec {
@@ -41,8 +41,8 @@ export class WorkspaceManager {
   private projectContext: ProjectContext = {};
 
   constructor(
-    baseWorkspacePath = './workspaces',
-    hostProjectPath = process.env.HOST_PROJECT_PATH || './host-project'
+    baseWorkspacePath = "./workspaces",
+    hostProjectPath = process.env.HOST_PROJECT_PATH || "./host-project",
   ) {
     this.baseWorkspacePath = path.resolve(baseWorkspacePath);
     this.hostProjectPath = path.resolve(hostProjectPath);
@@ -55,7 +55,7 @@ export class WorkspaceManager {
     // Detect host project structure
     await this.detectProjectContext();
 
-    console.log('🚀 Workspace Manager initialized');
+    console.log("🚀 Workspace Manager initialized");
     console.log(`📁 Workspaces: ${this.baseWorkspacePath}`);
     console.log(`🏠 Host Project: ${this.hostProjectPath}`);
   }
@@ -63,10 +63,12 @@ export class WorkspaceManager {
   private async detectProjectContext(): Promise<void> {
     try {
       // Check if host project exists and has package.json
-      const packageJsonPath = path.join(this.hostProjectPath, 'package.json');
+      const packageJsonPath = path.join(this.hostProjectPath, "package.json");
 
       if (await this.fileExists(packageJsonPath)) {
-        const packageJson = JSON.parse(await fs.readFile(packageJsonPath, 'utf8'));
+        const packageJson = JSON.parse(
+          await fs.readFile(packageJsonPath, "utf8"),
+        );
         this.projectContext = {
           hostProjectPath: this.hostProjectPath,
           packageJsonPath,
@@ -74,26 +76,26 @@ export class WorkspaceManager {
           existingFunctions: await this.findExistingFunctions(),
         };
 
-        console.log('✅ Detected existing project with package.json');
+        console.log("✅ Detected existing project with package.json");
       } else {
-        console.log('📝 No existing project detected, will work in isolation');
+        console.log("📝 No existing project detected, will work in isolation");
       }
     } catch (error) {
-      console.log('⚠️ Could not detect project context, working in isolation');
+      console.log("⚠️ Could not detect project context, working in isolation");
     }
   }
 
   private async findExistingComponents(): Promise<string[]> {
     try {
-      const possibleDirs = ['src/components', 'components', 'src'];
+      const possibleDirs = ["src/components", "components", "src"];
       const components: string[] = [];
 
       for (const dir of possibleDirs) {
         const fullPath = path.join(this.hostProjectPath, dir);
         if (await this.directoryExists(fullPath)) {
           const files = await fs.readdir(fullPath);
-          const componentFiles = files.filter(f =>
-            f.endsWith('.tsx') || f.endsWith('.jsx')
+          const componentFiles = files.filter(
+            (f) => f.endsWith(".tsx") || f.endsWith(".jsx"),
           );
           components.push(...componentFiles);
         }
@@ -107,15 +109,15 @@ export class WorkspaceManager {
 
   private async findExistingFunctions(): Promise<string[]> {
     try {
-      const possibleDirs = ['src/functions', 'functions', 'api', 'src/api'];
+      const possibleDirs = ["src/functions", "functions", "api", "src/api"];
       const functions: string[] = [];
 
       for (const dir of possibleDirs) {
         const fullPath = path.join(this.hostProjectPath, dir);
         if (await this.directoryExists(fullPath)) {
           const files = await fs.readdir(fullPath);
-          const functionFiles = files.filter(f =>
-            f.endsWith('.ts') || f.endsWith('.js')
+          const functionFiles = files.filter(
+            (f) => f.endsWith(".ts") || f.endsWith(".js"),
           );
           functions.push(...functionFiles);
         }
@@ -129,17 +131,17 @@ export class WorkspaceManager {
 
   async createWorkspace(
     agentId: string,
-    projectType: AgentWorkspace['projectType']
+    projectType: AgentWorkspace["projectType"],
   ): Promise<AgentWorkspace> {
     const workspacePath = path.join(this.baseWorkspacePath, agentId);
 
     // Create workspace directory structure
     await fs.mkdir(workspacePath, { recursive: true });
-    await fs.mkdir(path.join(workspacePath, 'components'), { recursive: true });
-    await fs.mkdir(path.join(workspacePath, 'functions'), { recursive: true });
-    await fs.mkdir(path.join(workspacePath, 'database'), { recursive: true });
-    await fs.mkdir(path.join(workspacePath, 'shared'), { recursive: true });
-    await fs.mkdir(path.join(workspacePath, 'output'), { recursive: true });
+    await fs.mkdir(path.join(workspacePath, "components"), { recursive: true });
+    await fs.mkdir(path.join(workspacePath, "functions"), { recursive: true });
+    await fs.mkdir(path.join(workspacePath, "database"), { recursive: true });
+    await fs.mkdir(path.join(workspacePath, "shared"), { recursive: true });
+    await fs.mkdir(path.join(workspacePath, "output"), { recursive: true });
 
     // Create workspace-specific package.json
     const packageJson = {
@@ -149,28 +151,33 @@ export class WorkspaceManager {
       scripts: {
         "dev:component": "vite --config vite.config.ts --port 5174",
         "build:component": "vite build --config vite.config.ts",
-        "dev:function": "bun run --hot functions/index.ts",
-        "build:function": "bun build functions/index.ts --outdir output/function",
-        "typecheck": "tsc --noEmit",
-        "lint": "eslint . --ext ts,tsx --max-warnings 0",
-        "format": "prettier --write ."
+        "dev:function": "tsx watch functions/index.ts",
+        "build:function":
+          "esbuild functions/index.ts --bundle --platform=node --format=esm --outdir output/function",
+        typecheck: "tsc --noEmit",
+        lint: "eslint . --ext ts,tsx --max-warnings 0",
+        format: "prettier --write .",
       },
       dependencies: {
-        "react": "^18.2.0",
-        "react-dom": "^18.2.0"
+        react: "^18.2.0",
+        "react-dom": "^18.2.0",
       },
       devDependencies: {
         "@types/react": "^18.2.0",
         "@types/react-dom": "^18.2.0",
-        "typescript": "^5.0.0",
-        "vite": "^5.0.0",
+        typescript: "^5.0.0",
+        vite: "^5.0.0",
         "@vitejs/plugin-react": "^4.0.0",
-        "eslint": "^8.0.0",
-        "prettier": "^3.0.0"
-      }
+        eslint: "^8.0.0",
+        prettier: "^3.0.0",
+      },
     };
 
-    await this.writeFile(agentId, 'package.json', JSON.stringify(packageJson, null, 2));
+    await this.writeFile(
+      agentId,
+      "package.json",
+      JSON.stringify(packageJson, null, 2),
+    );
 
     // Create TypeScript config
     const tsConfig = {
@@ -194,18 +201,22 @@ export class WorkspaceManager {
           "@/*": ["./shared/*"],
           "@components/*": ["./components/*"],
           "@functions/*": ["./functions/*"],
-          "@host/*": ["../host-project/*"]
-        }
+          "@host/*": ["../host-project/*"],
+        },
       },
       include: [
         "components/**/*",
         "functions/**/*",
         "shared/**/*",
-        "database/**/*"
-      ]
+        "database/**/*",
+      ],
     };
 
-    await this.writeFile(agentId, 'tsconfig.json', JSON.stringify(tsConfig, null, 2));
+    await this.writeFile(
+      agentId,
+      "tsconfig.json",
+      JSON.stringify(tsConfig, null, 2),
+    );
 
     // Create Vite config for React development
     const viteConfig = `import { defineConfig } from 'vite'
@@ -243,14 +254,14 @@ export default defineConfig({
   }
 })`;
 
-    await this.writeFile(agentId, 'vite.config.ts', viteConfig);
+    await this.writeFile(agentId, "vite.config.ts", viteConfig);
 
     // Create initial template files
     await this.createInitialTemplates(agentId, projectType);
 
     // Install dependencies
     try {
-      await this.executeCommand(agentId, 'bun install');
+      await this.executeCommand(agentId, "npm install");
     } catch (error) {
       console.warn(`Could not install dependencies for ${agentId}:`, error);
     }
@@ -258,10 +269,10 @@ export default defineConfig({
     const workspace: AgentWorkspace = {
       agentId,
       workspacePath,
-      status: 'ready',
+      status: "ready",
       createdAt: new Date(),
       lastActivity: new Date(),
-      projectType
+      projectType,
     };
 
     this.workspaces.set(agentId, workspace);
@@ -272,7 +283,7 @@ export default defineConfig({
 
   private async createInitialTemplates(
     agentId: string,
-    projectType: AgentWorkspace['projectType']
+    projectType: AgentWorkspace["projectType"],
   ): Promise<void> {
     // Component template
     const componentTemplate = `import React from 'react';
@@ -292,7 +303,7 @@ const Component: React.FC<ComponentProps> = (props) => {
 
 export default Component;`;
 
-    await this.writeFile(agentId, 'components/index.tsx', componentTemplate);
+    await this.writeFile(agentId, "components/index.tsx", componentTemplate);
 
     // Function template
     const functionTemplate = `export interface FunctionInput {
@@ -312,7 +323,7 @@ export default async function handler(input: FunctionInput): Promise<FunctionOut
   };
 }`;
 
-    await this.writeFile(agentId, 'functions/index.ts', functionTemplate);
+    await this.writeFile(agentId, "functions/index.ts", functionTemplate);
 
     // Shared types
     const typesTemplate = `export interface BaseProps {
@@ -326,7 +337,7 @@ export interface ApiResponse<T = unknown> {
   error?: string;
 }`;
 
-    await this.writeFile(agentId, 'shared/types.ts', typesTemplate);
+    await this.writeFile(agentId, "shared/types.ts", typesTemplate);
   }
 
   async executeCommand(agentId: string, command: string): Promise<string> {
@@ -335,7 +346,7 @@ export interface ApiResponse<T = unknown> {
       throw new Error(`No workspace found for agent ${agentId}`);
     }
 
-    workspace.status = 'busy';
+    workspace.status = "busy";
     workspace.lastActivity = new Date();
 
     try {
@@ -344,15 +355,19 @@ export interface ApiResponse<T = unknown> {
         timeout: 30000, // 30 second timeout
       });
 
-      workspace.status = 'ready';
-      return stdout + (stderr ? `\nSTDERR: ${stderr}` : '');
+      workspace.status = "ready";
+      return stdout + (stderr ? `\nSTDERR: ${stderr}` : "");
     } catch (error) {
-      workspace.status = 'ready';
+      workspace.status = "ready";
       throw error;
     }
   }
 
-  async writeFile(agentId: string, filePath: string, content: string): Promise<void> {
+  async writeFile(
+    agentId: string,
+    filePath: string,
+    content: string,
+  ): Promise<void> {
     const workspace = this.workspaces.get(agentId);
     if (!workspace) {
       throw new Error(`No workspace found for agent ${agentId}`);
@@ -365,7 +380,7 @@ export interface ApiResponse<T = unknown> {
     await fs.mkdir(dir, { recursive: true });
 
     // Write file
-    await fs.writeFile(fullPath, content, 'utf8');
+    await fs.writeFile(fullPath, content, "utf8");
 
     workspace.lastActivity = new Date();
   }
@@ -377,17 +392,22 @@ export interface ApiResponse<T = unknown> {
     }
 
     const fullPath = path.join(workspace.workspacePath, filePath);
-    return await fs.readFile(fullPath, 'utf8');
+    return await fs.readFile(fullPath, "utf8");
   }
 
-  async createComponent(agentId: string, spec: ComponentSpec): Promise<{ component: string; types: string }> {
+  async createComponent(
+    agentId: string,
+    spec: ComponentSpec,
+  ): Promise<{ component: string; types: string }> {
     // Generate TypeScript interface for props
     const propsInterface = this.generatePropsInterface(spec.name, spec.props);
 
     // Write props interface to shared types
-    const existingTypes = await this.readFile(agentId, 'shared/types.ts').catch(() => '');
-    const updatedTypes = existingTypes + '\n\n' + propsInterface;
-    await this.writeFile(agentId, 'shared/types.ts', updatedTypes);
+    const existingTypes = await this.readFile(agentId, "shared/types.ts").catch(
+      () => "",
+    );
+    const updatedTypes = existingTypes + "\n\n" + propsInterface;
+    await this.writeFile(agentId, "shared/types.ts", updatedTypes);
 
     // Generate component structure
     const componentCode = `import React from 'react';
@@ -409,25 +429,25 @@ export default ${spec.name};`;
 
     // Update components index
     const indexContent = `export { default as ${spec.name} } from './${spec.name}';`;
-    await this.writeFile(agentId, 'components/index.tsx', indexContent);
+    await this.writeFile(agentId, "components/index.tsx", indexContent);
 
     return {
       component: componentCode,
-      types: propsInterface
+      types: propsInterface,
     };
   }
 
   async createFunction(agentId: string, spec: FunctionSpec): Promise<string> {
     const functionCode = `export interface ${spec.name}Input {
-${Object.entries(spec.input).map(([key, value]) =>
-  `  ${key}: ${this.inferTypeScriptType(value)};`
-).join('\n')}
+${Object.entries(spec.input)
+  .map(([key, value]) => `  ${key}: ${this.inferTypeScriptType(value)};`)
+  .join("\n")}
 }
 
 export interface ${spec.name}Output {
-${Object.entries(spec.output).map(([key, value]) =>
-  `  ${key}: ${this.inferTypeScriptType(value)};`
-).join('\n')}
+${Object.entries(spec.output)
+  .map(([key, value]) => `  ${key}: ${this.inferTypeScriptType(value)};`)
+  .join("\n")}
 }
 
 export default async function ${spec.name}(input: ${spec.name}Input): Promise<${spec.name}Output> {
@@ -446,32 +466,37 @@ export default async function ${spec.name}(input: ${spec.name}Input): Promise<${
 
     // Update functions index
     const indexContent = `export { default as ${spec.name} } from './${spec.name}';`;
-    await this.writeFile(agentId, 'functions/index.ts', indexContent);
+    await this.writeFile(agentId, "functions/index.ts", indexContent);
 
     return functionCode;
   }
 
   async buildComponent(agentId: string): Promise<string> {
-    return await this.executeCommand(agentId, 'bun run build:component');
+    return await this.executeCommand(agentId, "npm run build:component");
   }
 
   async buildFunction(agentId: string): Promise<string> {
-    return await this.executeCommand(agentId, 'bun run build:function');
+    return await this.executeCommand(agentId, "npm run build:function");
   }
 
   async runTypeCheck(agentId: string): Promise<string> {
-    return await this.executeCommand(agentId, 'bun run typecheck');
+    return await this.executeCommand(agentId, "npm run typecheck");
   }
 
   async runLinter(agentId: string): Promise<string> {
-    return await this.executeCommand(agentId, 'bun run lint');
+    return await this.executeCommand(agentId, "npm run lint");
   }
 
-  private generatePropsInterface(componentName: string, props: Record<string, any>): string {
-    const propTypes = Object.entries(props).map(([key, value]) => {
-      const type = this.inferTypeScriptType(value);
-      return `  ${key}: ${type};`;
-    }).join('\n');
+  private generatePropsInterface(
+    componentName: string,
+    props: Record<string, any>,
+  ): string {
+    const propTypes = Object.entries(props)
+      .map(([key, value]) => {
+        const type = this.inferTypeScriptType(value);
+        return `  ${key}: ${type};`;
+      })
+      .join("\n");
 
     return `export interface ${componentName}Props {
 ${propTypes}
@@ -479,13 +504,13 @@ ${propTypes}
   }
 
   private inferTypeScriptType(value: any): string {
-    if (typeof value === 'string') return 'string';
-    if (typeof value === 'number') return 'number';
-    if (typeof value === 'boolean') return 'boolean';
-    if (Array.isArray(value)) return 'any[]';
-    if (typeof value === 'object') return 'Record<string, any>';
-    if (typeof value === 'function') return '() => void';
-    return 'any';
+    if (typeof value === "string") return "string";
+    if (typeof value === "number") return "number";
+    if (typeof value === "boolean") return "boolean";
+    if (Array.isArray(value)) return "any[]";
+    if (typeof value === "object") return "Record<string, any>";
+    if (typeof value === "function") return "() => void";
+    return "any";
   }
 
   private async fileExists(filePath: string): Promise<boolean> {
@@ -534,13 +559,20 @@ ${propTypes}
     return this.projectContext;
   }
 
-  async copyToHostProject(agentId: string, sourceFile: string, destinationPath: string): Promise<void> {
+  async copyToHostProject(
+    agentId: string,
+    sourceFile: string,
+    destinationPath: string,
+  ): Promise<void> {
     if (!this.projectContext.hostProjectPath) {
-      throw new Error('No host project detected');
+      throw new Error("No host project detected");
     }
 
     const sourcePath = path.join(this.baseWorkspacePath, agentId, sourceFile);
-    const destPath = path.join(this.projectContext.hostProjectPath, destinationPath);
+    const destPath = path.join(
+      this.projectContext.hostProjectPath,
+      destinationPath,
+    );
 
     // Ensure destination directory exists
     await fs.mkdir(path.dirname(destPath), { recursive: true });

@@ -1,6 +1,6 @@
-import Docker from 'dockerode';
-import { promises as fs } from 'fs';
-import path from 'path';
+import Docker from "dockerode";
+import { promises as fs } from "fs";
+import path from "path";
 
 const docker = new Docker();
 
@@ -9,7 +9,7 @@ export interface AgentWorkspace {
   containerId?: string;
   containerName: string;
   workspacePath: string;
-  status: 'creating' | 'ready' | 'busy' | 'stopped' | 'error';
+  status: "creating" | "ready" | "busy" | "stopped" | "error";
   createdAt: Date;
   lastActivity: Date;
 }
@@ -28,7 +28,7 @@ export interface FunctionSpec {
 }
 
 export interface DatabaseChange {
-  type: 'create_table' | 'alter_table' | 'add_column' | 'create_index';
+  type: "create_table" | "alter_table" | "add_column" | "create_index";
   description: string;
   schema: string;
 }
@@ -36,9 +36,9 @@ export interface DatabaseChange {
 export class ContainerManager {
   private workspaces = new Map<string, AgentWorkspace>();
   private readonly baseWorkspacePath: string;
-  private readonly imageName = 'agent-workspace:latest';
+  private readonly imageName = "agent-workspace:latest";
 
-  constructor(baseWorkspacePath = './workspaces') {
+  constructor(baseWorkspacePath = "./workspaces") {
     this.baseWorkspacePath = baseWorkspacePath;
   }
 
@@ -52,14 +52,18 @@ export class ContainerManager {
 
   private async buildWorkspaceImage(): Promise<void> {
     try {
-      console.log('Building agent workspace Docker image...');
+      console.log("Building agent workspace Docker image...");
 
-      const stream = await docker.buildImage({
-        context: '.',
-        src: ['Dockerfile.agent']
-      }, {
-        t: this.imageName
-      });
+      const stream = await docker.buildImage(
+        {
+          context: ".",
+          src: ["agent.Dockerfile"],
+        },
+        {
+          t: this.imageName,
+          dockerfile: "agent.Dockerfile",
+        },
+      );
 
       await new Promise((resolve, reject) => {
         docker.modem.followProgress(stream, (err, res) => {
@@ -68,9 +72,9 @@ export class ContainerManager {
         });
       });
 
-      console.log('✅ Agent workspace image built successfully');
+      console.log("✅ Agent workspace image built successfully");
     } catch (error) {
-      console.error('Failed to build workspace image:', error);
+      console.error("Failed to build workspace image:", error);
       throw error;
     }
   }
@@ -86,9 +90,9 @@ export class ContainerManager {
       agentId,
       containerName,
       workspacePath,
-      status: 'creating',
+      status: "creating",
       createdAt: new Date(),
-      lastActivity: new Date()
+      lastActivity: new Date(),
     };
 
     this.workspaces.set(agentId, workspace);
@@ -98,7 +102,7 @@ export class ContainerManager {
       const container = await docker.createContainer({
         Image: this.imageName,
         name: containerName,
-        WorkingDir: '/workspace',
+        WorkingDir: "/workspace",
         Tty: true,
         OpenStdin: true,
         AttachStdout: true,
@@ -107,25 +111,24 @@ export class ContainerManager {
           Binds: [`${path.resolve(workspacePath)}:/workspace`],
           Memory: 512 * 1024 * 1024, // 512MB limit
           CpuShares: 512, // Half CPU priority
-          NetworkMode: 'bridge'
+          NetworkMode: "bridge",
         },
         Env: [
-          'NODE_ENV=development',
+          "NODE_ENV=development",
           `AGENT_ID=${agentId}`,
-          'DATABASE_URL=postgresql://localhost:5432/agent_db'
-        ]
+          "DATABASE_URL=postgresql://localhost:5432/agent_db",
+        ],
       });
 
       await container.start();
 
       workspace.containerId = container.id;
-      workspace.status = 'ready';
+      workspace.status = "ready";
 
       console.log(`✅ Created workspace for agent ${agentId}`);
       return workspace;
-
     } catch (error) {
-      workspace.status = 'error';
+      workspace.status = "error";
       console.error(`Failed to create workspace for agent ${agentId}:`, error);
       throw error;
     }
@@ -138,45 +141,48 @@ export class ContainerManager {
     }
 
     try {
-      workspace.status = 'busy';
+      workspace.status = "busy";
       workspace.lastActivity = new Date();
 
       const container = docker.getContainer(workspace.containerId);
 
       const exec = await container.exec({
-        Cmd: ['bash', '-c', command],
+        Cmd: ["bash", "-c", command],
         AttachStdout: true,
         AttachStderr: true,
-        Tty: false
+        Tty: false,
       });
 
       const stream = await exec.start({ Detach: false, Tty: false });
 
       return new Promise((resolve, reject) => {
-        let output = '';
+        let output = "";
 
-        stream.on('data', (data) => {
+        stream.on("data", (data) => {
           output += data.toString();
         });
 
-        stream.on('end', () => {
-          workspace.status = 'ready';
+        stream.on("end", () => {
+          workspace.status = "ready";
           resolve(output.trim());
         });
 
-        stream.on('error', (error) => {
-          workspace.status = 'ready';
+        stream.on("error", (error) => {
+          workspace.status = "ready";
           reject(error);
         });
       });
-
     } catch (error) {
-      workspace.status = 'ready';
+      workspace.status = "ready";
       throw error;
     }
   }
 
-  async writeFile(agentId: string, filePath: string, content: string): Promise<void> {
+  async writeFile(
+    agentId: string,
+    filePath: string,
+    content: string,
+  ): Promise<void> {
     const workspace = this.workspaces.get(agentId);
     if (!workspace) {
       throw new Error(`No workspace found for agent ${agentId}`);
@@ -189,7 +195,7 @@ export class ContainerManager {
     await fs.mkdir(dir, { recursive: true });
 
     // Write file
-    await fs.writeFile(fullPath, content, 'utf8');
+    await fs.writeFile(fullPath, content, "utf8");
 
     workspace.lastActivity = new Date();
   }
@@ -201,15 +207,18 @@ export class ContainerManager {
     }
 
     const fullPath = path.join(workspace.workspacePath, filePath);
-    return await fs.readFile(fullPath, 'utf8');
+    return await fs.readFile(fullPath, "utf8");
   }
 
-  async createComponent(agentId: string, spec: ComponentSpec): Promise<{ component: string; types: string }> {
+  async createComponent(
+    agentId: string,
+    spec: ComponentSpec,
+  ): Promise<{ component: string; types: string }> {
     // Generate TypeScript interface for props
     const propsInterface = this.generatePropsInterface(spec.name, spec.props);
 
     // Write props interface
-    await this.writeFile(agentId, 'shared/types.ts', propsInterface);
+    await this.writeFile(agentId, "shared/types.ts", propsInterface);
 
     // Generate basic component structure
     const componentCode = this.generateComponentTemplate(spec.name);
@@ -219,11 +228,11 @@ export class ContainerManager {
 
     // Update index file
     const indexCode = `export { default as ${spec.name} } from './${spec.name}';`;
-    await this.writeFile(agentId, 'components/index.tsx', indexCode);
+    await this.writeFile(agentId, "components/index.tsx", indexCode);
 
     return {
       component: componentCode,
-      types: propsInterface
+      types: propsInterface,
     };
   }
 
@@ -236,42 +245,53 @@ export class ContainerManager {
 
     // Update index file
     const indexCode = `export { default as ${spec.name} } from './${spec.name}';`;
-    await this.writeFile(agentId, 'functions/index.ts', indexCode);
+    await this.writeFile(agentId, "functions/index.ts", indexCode);
 
     return functionCode;
   }
 
-  async generateMigration(agentId: string, change: DatabaseChange): Promise<string> {
-    const timestamp = new Date().toISOString().replace(/[-:.]/g, '').slice(0, 14);
-    const migrationName = `${timestamp}_${change.description.replace(/\s+/g, '_').toLowerCase()}`;
+  async generateMigration(
+    agentId: string,
+    change: DatabaseChange,
+  ): Promise<string> {
+    const timestamp = new Date()
+      .toISOString()
+      .replace(/[-:.]/g, "")
+      .slice(0, 14);
+    const migrationName = `${timestamp}_${change.description.replace(/\s+/g, "_").toLowerCase()}`;
 
     // Generate Drizzle migration
-    const output = await this.executeCommand(agentId, 'bun run db:generate');
+    const output = await this.executeCommand(agentId, "npm run db:generate");
 
     return output;
   }
 
   async buildComponent(agentId: string): Promise<string> {
-    return await this.executeCommand(agentId, 'bun run build:component');
+    return await this.executeCommand(agentId, "npm run build:component");
   }
 
   async buildFunction(agentId: string): Promise<string> {
-    return await this.executeCommand(agentId, 'bun run build:function');
+    return await this.executeCommand(agentId, "npm run build:function");
   }
 
   async runTypeCheck(agentId: string): Promise<string> {
-    return await this.executeCommand(agentId, 'bun run typecheck');
+    return await this.executeCommand(agentId, "npm run typecheck");
   }
 
   async runLinter(agentId: string): Promise<string> {
-    return await this.executeCommand(agentId, 'bun run lint');
+    return await this.executeCommand(agentId, "npm run lint");
   }
 
-  private generatePropsInterface(componentName: string, props: Record<string, any>): string {
-    const propTypes = Object.entries(props).map(([key, value]) => {
-      const type = this.inferTypeScriptType(value);
-      return `  ${key}: ${type};`;
-    }).join('\n');
+  private generatePropsInterface(
+    componentName: string,
+    props: Record<string, any>,
+  ): string {
+    const propTypes = Object.entries(props)
+      .map(([key, value]) => {
+        const type = this.inferTypeScriptType(value);
+        return `  ${key}: ${type};`;
+      })
+      .join("\n");
 
     return `export interface ${componentName}Props {
 ${propTypes}
@@ -296,15 +316,15 @@ export default ${componentName};
 
   private generateFunctionTemplate(spec: FunctionSpec): string {
     return `export interface ${spec.name}Input {
-  ${Object.entries(spec.input).map(([key, value]) =>
-    `${key}: ${this.inferTypeScriptType(value)};`
-  ).join('\n  ')}
+  ${Object.entries(spec.input)
+    .map(([key, value]) => `${key}: ${this.inferTypeScriptType(value)};`)
+    .join("\n  ")}
 }
 
 export interface ${spec.name}Output {
-  ${Object.entries(spec.output).map(([key, value]) =>
-    `${key}: ${this.inferTypeScriptType(value)};`
-  ).join('\n  ')}
+  ${Object.entries(spec.output)
+    .map(([key, value]) => `${key}: ${this.inferTypeScriptType(value)};`)
+    .join("\n  ")}
 }
 
 export default async function ${spec.name}(input: ${spec.name}Input): Promise<${spec.name}Output> {
@@ -315,12 +335,12 @@ export default async function ${spec.name}(input: ${spec.name}Input): Promise<${
   }
 
   private inferTypeScriptType(value: any): string {
-    if (typeof value === 'string') return 'string';
-    if (typeof value === 'number') return 'number';
-    if (typeof value === 'boolean') return 'boolean';
-    if (Array.isArray(value)) return 'any[]';
-    if (typeof value === 'object') return 'Record<string, any>';
-    return 'any';
+    if (typeof value === "string") return "string";
+    if (typeof value === "number") return "number";
+    if (typeof value === "boolean") return "boolean";
+    if (Array.isArray(value)) return "any[]";
+    if (typeof value === "object") return "Record<string, any>";
+    return "any";
   }
 
   async getWorkspaceStatus(agentId: string): Promise<AgentWorkspace | null> {
@@ -334,7 +354,7 @@ export default async function ${spec.name}(input: ${spec.name}Input): Promise<${
     try {
       const container = docker.getContainer(workspace.containerId);
       await container.stop();
-      workspace.status = 'stopped';
+      workspace.status = "stopped";
 
       console.log(`🛑 Stopped workspace for agent ${agentId}`);
     } catch (error) {

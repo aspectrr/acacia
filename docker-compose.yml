@@ -4,7 +4,7 @@ services:
       context: .
       dockerfile: Dockerfile
     ports:
-      - "3000:3000"
+      - "8080:8080"
     depends_on:
       - postgres
     environment:
@@ -16,7 +16,7 @@ services:
     restart: unless-stopped
 
   postgres:
-    image: postgres:16
+    image: postgres:17
     ports:
       - "5432:5432"
     environment:

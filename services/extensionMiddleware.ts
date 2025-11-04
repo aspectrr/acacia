@@ -1,5 +1,6 @@
-import type { Context, Next, HonoRequest } from "hono";
-import db from "../db/client";
+// Hono types removed
+import { dbClient } from "../db/client";
+const db = dbClient.db;
 import {
   users,
   userExtensions,
@@ -69,7 +70,7 @@ export class ExtensionMiddleware {
   ) {}
 
   // Main middleware function
-  async handle(c: Context, next: Next): Promise<Response | void> {
+  async handle(c: any, next: any): Promise<Response | void> {
     try {
       // Extract user context (assuming auth middleware provides this)
       const userId = c.req.header("x-user-id") as string;
@@ -517,7 +518,7 @@ export class ExtensionMiddleware {
 
   // Proxy request to original application
   private async proxyToOriginal(
-    req: HonoRequest,
+    req: any,
     context: ExtensionContext,
   ): Promise<any> {
     try {

@@ -1,14 +1,14 @@
-import { BunSQLDatabase, drizzle } from "drizzle-orm/bun-sql";
-import { migrate } from "drizzle-orm/bun-sql/migrator";
-import { SQL } from "bun";
+import { drizzle, PostgresJsDatabase } from "drizzle-orm/postgres-js";
+import { migrate } from "drizzle-orm/postgres-js/migrator";
+import postgres, { type Sql } from "postgres";
 import { eq, and, sql } from "drizzle-orm";
 import * as schema from "./schema";
 import path from "path";
 
 // Database connection interface
 interface DatabaseConnection {
-  db: BunSQLDatabase<typeof schema>;
-  client: Bun.SQL;
+  db: PostgresJsDatabase<typeof schema>;
+  client: Sql;
   close: () => Promise<void>;
   migrate: () => Promise<void>;
 }
@@ -32,6 +32,7 @@ class DatabaseClient {
   }
 
   private async initializePostgreSQL(): Promise<void> {
+    console.log("Initializing PostgreSQL database...");
     const DATABASE_URL = process.env.DATABASE_URL;
 
     if (!DATABASE_URL) {
@@ -43,17 +44,13 @@ class DatabaseClient {
       ? DATABASE_URL
       : `postgresql://localhost:5432/${DATABASE_URL}`;
 
-    const client = new SQL(connectionString, {
+    const client = postgres(connectionString, {
       max: 10, // Connection pool size
       idle_timeout: 20,
       connect_timeout: 10,
-      ssl:
-        process.env.NODE_ENV === "production"
-          ? { rejectUnauthorized: false }
-          : false,
     });
 
-    const db = drizzle({ client, schema });
+    const db = drizzle(client, { schema });
 
     this.connection = {
       db,
@@ -72,6 +69,7 @@ class DatabaseClient {
   }
 
   get db() {
+    console.log("Getting database connection...");
     if (!this.connection) {
       throw new Error("Database not initialized. Call initialize() first.");
     }
@@ -173,7 +171,7 @@ class DatabaseClient {
     connectionCount?: number;
   }> {
     try {
-      const result = await this.db.execute(sql`SELECT 1 as health_check`);
+      await this.db.execute(sql`SELECT 1 as health_check`);
 
       return {
         healthy: true,
@@ -203,6 +201,7 @@ const dbClient = new DatabaseClient();
 let dbInitialized = false;
 
 export const initializeDatabase = async (): Promise<void> => {
+  console.log("Initializing database...");
   if (!dbInitialized) {
     await dbClient.initialize();
 
@@ -444,7 +443,7 @@ export const extensionService = {
 
 // Export everything
 export { schema, dbClient };
-export default dbClient.db;
+// export default dbClient.db;
 
 // Graceful shutdown
 process.on("SIGINT", async () => {

@@ -1,3 +1,5 @@
+import { build as esbuildBuild } from "esbuild";
+
 export interface TranspileOptions {
   /**
    * Timeout for code execution in milliseconds
@@ -66,7 +68,7 @@ export class TranspileManager {
   private static readonly DEFAULT_TIMEOUT = 30000; // 30 seconds
 
   /**
-   * Transpiles and sanitizes user code using Bun's build system
+   * Transpiles and sanitizes user code using esbuild
    */
   async transpile(
     code: string,
@@ -84,46 +86,26 @@ export class TranspileManager {
       // Pre-process code to wrap it safely
       const wrappedCode = this.wrapUserCode(code, options);
 
-      // Use Bun to transpile the code
-      const buildResult = await Bun.build({
-        entrypoints: ["<stdin>"],
-        target: "bun",
-        format: "esm",
-        minify: {
-          whitespace: false,
-          identifiers: false,
-          syntax: true,
+      // Use esbuild to transpile the code
+      const buildResult = await esbuildBuild({
+        stdin: {
+          contents: wrappedCode,
+          loader: "ts",
+          sourcefile: "inline.ts",
+          resolveDir: process.cwd(),
         },
-
+        write: false,
+        bundle: false,
+        platform: "node",
+        target: "node20",
+        format: "esm",
         sourcemap: "inline",
-        plugins: [
-          {
-            name: "stdin-plugin",
-            setup(build) {
-              build.onResolve({ filter: /^<stdin>$/ }, () => ({
-                path: "<stdin>",
-                namespace: "stdin",
-              }));
-
-              build.onLoad({ filter: /.*/, namespace: "stdin" }, () => ({
-                contents: wrappedCode,
-                loader: "ts",
-              }));
-            },
-          },
-        ],
+        minifySyntax: true,
+        logLevel: "silent",
       });
 
-      if (!buildResult.success) {
-        return {
-          success: false,
-          error: "Transpilation failed",
-          details: buildResult.logs.map((log) => log.message).join("\n"),
-        };
-      }
-
       // Get the transpiled output
-      const output = buildResult.outputs[0];
+      const output = buildResult.outputFiles && buildResult.outputFiles[0];
       if (!output) {
         return {
           success: false,
@@ -131,7 +113,7 @@ export class TranspileManager {
         };
       }
 
-      const transpiledCode = await output.text();
+      const transpiledCode = output.text;
 
       // Additional sanitization pass
       const sanitizedCode = this.sanitizeTranspiledCode(
@@ -142,9 +124,7 @@ export class TranspileManager {
       return {
         success: true,
         transpiledCode: sanitizedCode,
-        warnings: buildResult.logs
-          .filter((log) => log.level === "warning")
-          .map((log) => log.message),
+        warnings: (buildResult.warnings || []).map((w) => w.text),
       };
     } catch (error) {
       return {

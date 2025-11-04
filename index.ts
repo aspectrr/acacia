@@ -1,4 +1,9 @@
-import { Hono } from "hono";
+import Fastify, {
+  type FastifyInstance,
+  type FastifyReply,
+  type FastifyRequest,
+} from "fastify";
+import websocket, { type SocketStream } from "@fastify/websocket";
 import OpenAI from "openai";
 import {
   workspaceManager,
@@ -8,14 +13,14 @@ import {
 import { transpileManager } from "./services/transpileManager";
 import { initializeDatabase, extensionService } from "./db/client";
 
-const app = new Hono();
+const fastify = Fastify({ logger: false });
 
 // OpenRouter client configuration
 const openrouter = new OpenAI({
   baseURL: "https://openrouter.ai/api/v1",
   apiKey: process.env.OPENROUTER_API_KEY,
   defaultHeaders: {
-    "HTTP-Referer": process.env.YOUR_SITE_URL || "http://localhost:3000",
+    "HTTP-Referer": process.env.YOUR_SITE_URL || "http://localhost:8080",
     "X-Title": process.env.YOUR_SITE_NAME || "Acacia",
   },
 });
@@ -297,11 +302,11 @@ async function initializePlatform() {
   }
 }
 
-initializePlatform();
+await initializePlatform();
 
-// Root route with enhanced documentation
-app.get("/", (c) => {
-  return c.html(`
+// Routes
+fastify.get("/", async (request: FastifyRequest, reply: FastifyReply) => {
+  return reply.type("text/html").send(`
     <!DOCTYPE html>
     <html>
       <head>
@@ -403,12 +408,12 @@ app.get("/", (c) => {
 
         <h2 class="header">🚀 Quick Start:</h2>
         <pre><code># Create a React component agent
-curl -X POST http://localhost:3000/agents \\
+curl -X POST http://localhost:8080/agents \\
   -H "Content-Type: application/json" \\
   -d '{"name": "ComponentBot", "type": "react-developer"}'
 
 # Request a component
-curl -X POST http://localhost:3000/agents/{agent-id}/component \\
+curl -X POST http://localhost:8080/agents/{agent-id}/component \\
   -H "Content-Type: application/json" \\
   -d '{
     "name": "UserCard",
@@ -421,16 +426,16 @@ curl -X POST http://localhost:3000/agents/{agent-id}/component \\
 });
 
 // Get all agents with workspace status
-app.get("/agents", async (c) => {
+fastify.get("/agents", async (request: FastifyRequest, reply: FastifyReply) => {
   const agents = Array.from(activeAgents.values());
   const workspaces = await workspaceManager.listWorkspaces();
 
-  const agentsWithWorkspace = agents.map((agent) => ({
+  const agentsWithWorkspace = agents.map((agent: any) => ({
     ...agent,
     workspace: workspaces.find((w) => w.agentId === agent.id),
   }));
 
-  return c.json({
+  return reply.send({
     message: "Active development agents",
     count: agents.length,
     agents: agentsWithWorkspace,
@@ -438,293 +443,395 @@ app.get("/agents", async (c) => {
 });
 
 // Create a new specialized agent
-app.post("/agents", async (c) => {
-  const body = await c.req.json();
-  const { name, type } = body;
+fastify.post(
+  "/agents",
+  async (request: FastifyRequest, reply: FastifyReply) => {
+    const body: any = request.body || {};
+    const { name, type } = body;
 
-  if (!name || !type) {
-    return c.json({ error: "Name and type are required" }, 400);
-  }
+    if (!name || !type) {
+      return reply.code(400).send({ error: "Name and type are required" });
+    }
 
-  if (!AGENT_MODELS[type as keyof typeof AGENT_MODELS]) {
-    return c.json(
-      {
+    if (!AGENT_MODELS[type as keyof typeof AGENT_MODELS]) {
+      return reply.code(400).send({
         error: "Invalid agent type",
         validTypes: Object.keys(AGENT_MODELS),
-      },
-      400,
-    );
-  }
+      });
+    }
 
-  const agent = await createAgent(name, type);
+    const agent = await createAgent(name, type);
 
-  return c.json(
-    {
+    return reply.code(201).send({
       message: "Development agent created successfully",
       agent: agent,
-    },
-    201,
-  );
-});
+    });
+  },
+);
 
 // Chat with a specialized agent
-app.post("/agents/:id/chat", async (c) => {
-  const agentId = c.req.param("id");
-  const body = await c.req.json();
-  const { message, userId } = body;
+fastify.post(
+  "/agents/:id/chat",
+  async (request: FastifyRequest, reply: FastifyReply) => {
+    const { id: agentId } = (request.params as any) || {};
+    const body: any = request.body || {};
+    const { message, userId } = body;
 
-  if (!message || !userId) {
-    return c.json({ error: "Message and userId are required" }, 400);
-  }
+    if (!message || !userId) {
+      return reply.code(400).send({ error: "Message and userId are required" });
+    }
 
-  const agent = activeAgents.get(agentId);
-  if (!agent) {
-    return c.json({ error: "Agent not found" }, 404);
-  }
+    const agent = activeAgents.get(agentId);
+    if (!agent) {
+      return reply.code(404).send({ error: "Agent not found" });
+    }
 
-  if (!agent.workspaceReady) {
-    return c.json({ error: "Agent workspace is not ready" }, 503);
-  }
+    if (!agent.workspaceReady) {
+      return reply.code(503).send({ error: "Agent workspace is not ready" });
+    }
 
-  const sessionId = `${agentId}-${userId}`;
-  const history = chatSessions.get(sessionId) || [];
+    const sessionId = `${agentId}-${userId}`;
+    const history = chatSessions.get(sessionId) || [];
 
-  agent.status = "busy";
+    agent.status = "busy";
 
-  try {
-    const { response, attachments } = await sendMessageToLLM(
-      agent,
-      message,
-      history,
-    );
+    try {
+      const { response, attachments } = await sendMessageToLLM(
+        agent,
+        message,
+        history,
+      );
 
-    const userMessage: ChatMessage = {
-      id: `msg-${Date.now()}-1`,
-      sessionId,
-      agentId,
-      userId,
-      content: message,
-      role: "user",
-      timestamp: new Date(),
-    };
+      const userMessage: ChatMessage = {
+        id: `msg-${Date.now()}-1`,
+        sessionId,
+        agentId,
+        userId,
+        content: message,
+        role: "user",
+        timestamp: new Date(),
+      };
 
-    const agentMessage: ChatMessage = {
-      id: `msg-${Date.now()}-2`,
-      sessionId,
-      agentId,
-      userId,
-      content: response,
-      role: "agent",
-      timestamp: new Date(),
-      attachments,
-    };
+      const agentMessage: ChatMessage = {
+        id: `msg-${Date.now()}-2`,
+        sessionId,
+        agentId,
+        userId,
+        content: response,
+        role: "agent",
+        timestamp: new Date(),
+        attachments,
+      };
 
-    const updatedHistory = [...history, userMessage, agentMessage].slice(-20);
-    chatSessions.set(sessionId, updatedHistory);
+      const updatedHistory = [...history, userMessage, agentMessage].slice(-20);
+      chatSessions.set(sessionId, updatedHistory);
 
-    agent.status = "active";
+      agent.status = "active";
 
-    return c.json({
-      userMessage,
-      agentMessage,
-      agent: {
-        id: agent.id,
-        name: agent.name,
-        type: agent.type,
-        status: agent.status,
-      },
-    });
-  } catch (error) {
-    agent.status = "active";
-    console.error("Chat error:", error);
-    return c.json({ error: "Failed to process chat message" }, 500);
-  }
-});
+      return reply.send({
+        userMessage,
+        agentMessage,
+        agent: {
+          id: agent.id,
+          name: agent.name,
+          type: agent.type,
+          status: agent.status,
+        },
+      });
+    } catch (error) {
+      agent.status = "active";
+      console.error("Chat error:", error);
+      return reply.code(500).send({ error: "Failed to process chat message" });
+    }
+  },
+);
 
 // Request a React component
-app.post("/agents/:id/component", async (c) => {
-  const agentId = c.req.param("id");
-  const body = await c.req.json();
-  const { name, props, requirements } = body;
+fastify.post(
+  "/agents/:id/component",
+  async (request: FastifyRequest, reply: FastifyReply) => {
+    const { id: agentId } = (request.params as any) || {};
+    const body: any = request.body || {};
+    const { name, props, requirements } = body;
 
-  const agent = activeAgents.get(agentId);
-  if (!agent || !agent.workspaceReady) {
-    return c.json({ error: "Agent not found or workspace not ready" }, 404);
-  }
+    const agent = activeAgents.get(agentId);
+    if (!agent || !agent.workspaceReady) {
+      return reply
+        .code(404)
+        .send({ error: "Agent not found or workspace not ready" });
+    }
 
-  if (!["react-developer", "fullstack-developer"].includes(agent.type)) {
-    return c.json(
-      { error: "Agent is not configured for React development" },
-      400,
-    );
-  }
+    if (!["react-developer", "fullstack-developer"].includes(agent.type)) {
+      return reply
+        .code(400)
+        .send({ error: "Agent is not configured for React development" });
+    }
 
-  try {
-    const spec: ComponentSpec = { name, props, requirements };
-    const { component, types } = await workspaceManager.createComponent(
-      agentId,
-      spec,
-    );
+    try {
+      const spec: ComponentSpec = { name, props, requirements };
+      const { component, types } = await workspaceManager.createComponent(
+        agentId,
+        spec,
+      );
 
-    // Update agent's current project
-    agent.currentProject = { componentName: name, requirements, props };
+      agent.currentProject = { componentName: name, requirements, props };
 
-    return c.json({
-      message: `React component ${name} created successfully`,
-      component: {
-        name,
-        code: component,
-        types,
-        props,
-      },
-      workspace: await workspaceManager.getWorkspaceStatus(agentId),
-    });
-  } catch (error) {
-    console.error("Component creation error:", error);
-    return c.json({ error: "Failed to create component" }, 500);
-  }
-});
+      return reply.send({
+        message: `React component ${name} created successfully`,
+        component: {
+          name,
+          code: component,
+          types,
+          props,
+        },
+        workspace: await workspaceManager.getWorkspaceStatus(agentId),
+      });
+    } catch (error) {
+      console.error("Component creation error:", error);
+      return reply.code(500).send({ error: "Failed to create component" });
+    }
+  },
+);
 
 // Request a serverless function
-app.post("/agents/:id/function", async (c) => {
-  const agentId = c.req.param("id");
-  const body = await c.req.json();
-  const { name, input, output, requirements } = body;
+fastify.post(
+  "/agents/:id/function",
+  async (request: FastifyRequest, reply: FastifyReply) => {
+    const { id: agentId } = (request.params as any) || {};
+    const body: any = request.body || {};
+    const { name, input, output, requirements } = body;
 
-  const agent = activeAgents.get(agentId);
-  if (!agent || !agent.workspaceReady) {
-    return c.json({ error: "Agent not found or workspace not ready" }, 404);
-  }
+    const agent = activeAgents.get(agentId);
+    if (!agent || !agent.workspaceReady) {
+      return reply
+        .code(404)
+        .send({ error: "Agent not found or workspace not ready" });
+    }
 
-  if (!["serverless-developer", "fullstack-developer"].includes(agent.type)) {
-    return c.json(
-      { error: "Agent is not configured for serverless development" },
-      400,
-    );
-  }
+    if (!["serverless-developer", "fullstack-developer"].includes(agent.type)) {
+      return reply
+        .code(400)
+        .send({ error: "Agent is not configured for serverless development" });
+    }
 
-  try {
-    const spec: FunctionSpec = { name, input, output, requirements };
-    const functionCode = await workspaceManager.createFunction(agentId, spec);
+    try {
+      const spec: FunctionSpec = { name, input, output, requirements };
+      const functionCode = await workspaceManager.createFunction(agentId, spec);
 
-    agent.currentProject = { functionName: name, requirements };
+      agent.currentProject = { functionName: name, requirements };
 
-    return c.json({
-      message: `Serverless function ${name} created successfully`,
-      function: {
-        name,
-        code: functionCode,
-        input,
-        output,
-      },
-      workspace: await workspaceManager.getWorkspaceStatus(agentId),
-    });
-  } catch (error) {
-    console.error("Function creation error:", error);
-    return c.json({ error: "Failed to create function" }, 500);
-  }
-});
+      return reply.send({
+        message: `Serverless function ${name} created successfully`,
+        function: {
+          name,
+          code: functionCode,
+          input,
+          output,
+        },
+        workspace: await workspaceManager.getWorkspaceStatus(agentId),
+      });
+    } catch (error) {
+      console.error("Function creation error:", error);
+      return reply.code(500).send({ error: "Failed to create function" });
+    }
+  },
+);
 
 // Get workspace status and files
-app.get("/agents/:id/workspace", async (c) => {
-  const agentId = c.req.param("id");
-  const agent = activeAgents.get(agentId);
+fastify.get(
+  "/agents/:id/workspace",
+  async (request: FastifyRequest, reply: FastifyReply) => {
+    const { id: agentId } = (request.params as any) || {};
+    const agent = activeAgents.get(agentId);
 
-  if (!agent) {
-    return c.json({ error: "Agent not found" }, 404);
-  }
-
-  const workspace = await workspaceManager.getWorkspaceStatus(agentId);
-
-  return c.json({
-    agent: {
-      id: agent.id,
-      name: agent.name,
-      type: agent.type,
-      currentProject: agent.currentProject,
-    },
-    workspace,
-  });
-});
-
-// Build and validate agent's work
-app.post("/agents/:id/build", async (c) => {
-  const agentId = c.req.param("id");
-  const body = await c.req.json();
-  const { type } = body; // 'component', 'function', or 'all'
-
-  const agent = activeAgents.get(agentId);
-  if (!agent || !agent.workspaceReady) {
-    return c.json({ error: "Agent not found or workspace not ready" }, 404);
-  }
-
-  try {
-    const results: any = {};
-
-    if (type === "component" || type === "all") {
-      results.component = await workspaceManager.buildComponent(agentId);
+    if (!agent) {
+      return reply.code(404).send({ error: "Agent not found" });
     }
 
-    if (type === "function" || type === "all") {
-      results.function = await workspaceManager.buildFunction(agentId);
-    }
+    const workspace = await workspaceManager.getWorkspaceStatus(agentId);
 
-    // Always run type checking
-    results.typecheck = await workspaceManager.runTypeCheck(agentId);
-
-    return c.json({
-      message: "Build completed",
-      results,
+    return reply.send({
       agent: {
         id: agent.id,
         name: agent.name,
         type: agent.type,
+        currentProject: agent.currentProject,
       },
+      workspace,
     });
-  } catch (error) {
-    console.error("Build error:", error);
-    return c.json(
-      {
+  },
+);
+
+// Build and validate agent's work
+fastify.post(
+  "/agents/:id/build",
+  async (request: FastifyRequest, reply: FastifyReply) => {
+    const { id: agentId } = (request.params as any) || {};
+    const body: any = request.body || {};
+    const { type } = body; // 'component', 'function', or 'all'
+
+    const agent = activeAgents.get(agentId);
+    if (!agent || !agent.workspaceReady) {
+      return reply
+        .code(404)
+        .send({ error: "Agent not found or workspace not ready" });
+    }
+
+    try {
+      const results: any = {};
+
+      if (type === "component" || type === "all") {
+        results.component = await workspaceManager.buildComponent(agentId);
+      }
+
+      if (type === "function" || type === "all") {
+        results.function = await workspaceManager.buildFunction(agentId);
+      }
+
+      results.typecheck = await workspaceManager.runTypeCheck(agentId);
+
+      return reply.send({
+        message: "Build completed",
+        results,
+        agent: {
+          id: agent.id,
+          name: agent.name,
+          type: agent.type,
+        },
+      });
+    } catch (error) {
+      console.error("Build error:", error);
+      return reply.code(500).send({
         error: "Build failed",
         details: error instanceof Error ? error.message : "Unknown error",
-      },
-      500,
-    );
-  }
-});
+      });
+    }
+  },
+);
 
 // Execute custom commands in agent workspace
-app.post("/agents/:id/execute", async (c) => {
-  const agentId = c.req.param("id");
-  const body = await c.req.json();
-  const { command } = body;
+fastify.post(
+  "/agents/:id/execute",
+  async (request: FastifyRequest, reply: FastifyReply) => {
+    const { id: agentId } = (request.params as any) || {};
+    const body: any = request.body || {};
+    const { command } = body;
 
-  const agent = activeAgents.get(agentId);
-  if (!agent || !agent.workspaceReady) {
-    return c.json({ error: "Agent not found or workspace not ready" }, 404);
-  }
+    const agent = activeAgents.get(agentId);
+    if (!agent || !agent.workspaceReady) {
+      return reply
+        .code(404)
+        .send({ error: "Agent not found or workspace not ready" });
+    }
 
-  try {
-    const output = await workspaceManager.executeCommand(agentId, command);
+    try {
+      const output = await workspaceManager.executeCommand(agentId, command);
 
-    return c.json({
-      command,
-      output,
-      timestamp: new Date().toISOString(),
-    });
-  } catch (error) {
-    console.error("Command execution error:", error);
-    return c.json(
-      {
+      return reply.send({
+        command,
+        output,
+        timestamp: new Date().toISOString(),
+      });
+    } catch (error) {
+      console.error("Command execution error:", error);
+      return reply.code(500).send({
         error: "Command execution failed",
         details: error instanceof Error ? error.message : "Unknown error",
+      });
+    }
+  },
+);
+
+// WebSocket for development workspace
+await fastify.register(websocket);
+fastify.get(
+  "/ws",
+  { websocket: true },
+  (connection: SocketStream, req: FastifyRequest) => {
+    console.log("WebSocket connection opened for development workspace");
+
+    connection.socket.on(
+      "message",
+      (raw: string | Buffer | ArrayBuffer | Buffer[]) => {
+        try {
+          const messageStr = typeof raw === "string" ? raw : raw.toString();
+          const data = JSON.parse(messageStr);
+          const { type, payload } = data;
+
+          switch (type) {
+            case "join_workspace": {
+              (connection as any).data = {
+                userId: payload.userId,
+                agentId: payload.agentId,
+              };
+              connection.socket.send(
+                JSON.stringify({
+                  type: "joined",
+                  payload: {
+                    message: `Connected to ${payload.agentId} workspace`,
+                  },
+                }),
+              );
+              break;
+            }
+            case "development_chat": {
+              const { agentId, userId, message: devMessage } = payload;
+              const agent = activeAgents.get(agentId);
+
+              if (agent && agent.workspaceReady) {
+                sendMessageToLLM(agent, devMessage)
+                  .then(({ response, attachments }) => {
+                    connection.socket.send(
+                      JSON.stringify({
+                        type: "agent_response",
+                        payload: {
+                          agentId,
+                          message: response,
+                          attachments,
+                          timestamp: new Date().toISOString(),
+                        },
+                      }),
+                    );
+                  })
+                  .catch(() => {
+                    connection.socket.send(
+                      JSON.stringify({
+                        type: "error",
+                        payload: { message: "Failed to get agent response" },
+                      }),
+                    );
+                  });
+              }
+              break;
+            }
+            default: {
+              connection.socket.send(
+                JSON.stringify({
+                  type: "error",
+                  payload: { message: "Unknown message type" },
+                }),
+              );
+            }
+          }
+        } catch {
+          connection.socket.send(
+            JSON.stringify({
+              type: "error",
+              payload: { message: "Invalid message format" },
+            }),
+          );
+        }
       },
-      500,
     );
-  }
-});
+
+    connection.socket.on("close", () => {
+      console.log("WebSocket connection closed");
+    });
+  },
+);
 
 const port = parseInt(process.env.PORT || "8080");
+await fastify.listen({ port, host: "0.0.0.0" });
 
 console.log(`Acacia running on http://localhost:${port}`);
 console.log(`Specialized agents: ${Object.keys(AGENT_MODELS).join(", ")}`);
@@ -741,84 +848,4 @@ setTimeout(async () => {
   } catch (error) {
     console.error("Failed to create default agents:", error);
   }
-}, 2000); // Wait 2 seconds for platform to fully initialize
-
-export default {
-  port: port,
-  fetch: app.fetch,
-  websocket: {
-    message(ws: any, message: string) {
-      try {
-        const data = JSON.parse(message);
-        const { type, payload } = data;
-
-        switch (type) {
-          case "join_workspace":
-            ws.data = { userId: payload.userId, agentId: payload.agentId };
-            ws.send(
-              JSON.stringify({
-                type: "joined",
-                payload: {
-                  message: `Connected to ${payload.agentId} workspace`,
-                },
-              }),
-            );
-            break;
-
-          case "development_chat":
-            const { agentId, userId, message: devMessage } = payload;
-            const agent = activeAgents.get(agentId);
-
-            if (agent && agent.workspaceReady) {
-              sendMessageToLLM(agent, devMessage)
-                .then(({ response, attachments }) => {
-                  ws.send(
-                    JSON.stringify({
-                      type: "agent_response",
-                      payload: {
-                        agentId,
-                        message: response,
-                        attachments,
-                        timestamp: new Date().toISOString(),
-                      },
-                    }),
-                  );
-                })
-                .catch((error) => {
-                  ws.send(
-                    JSON.stringify({
-                      type: "error",
-                      payload: { message: "Failed to get agent response" },
-                    }),
-                  );
-                });
-            }
-            break;
-
-          default:
-            ws.send(
-              JSON.stringify({
-                type: "error",
-                payload: { message: "Unknown message type" },
-              }),
-            );
-        }
-      } catch (error) {
-        ws.send(
-          JSON.stringify({
-            type: "error",
-            payload: { message: "Invalid message format" },
-          }),
-        );
-      }
-    },
-
-    open(ws: any) {
-      console.log("WebSocket connection opened for development workspace");
-    },
-
-    close(ws: any) {
-      console.log("WebSocket connection closed");
-    },
-  },
-};
+}, 10000); // Wait 2 seconds for platform to fully initialize

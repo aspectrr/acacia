@@ -12,36 +12,29 @@ const db = drizzle(client, { schema });
 async function seed() {
   console.log("Seeding database...");
 
-  // Insert a sample application
-  const [app] = await db
-    .insert(schema.applications)
-    .values({
-      name: "Sample Application",
-      targetUrl: "http://localhost:3001",
-      description: "A sample application for development",
-    })
-    .returning();
-
-  console.log(`Created application: ${app.name} (${app.id})`);
+  // Skipping application seeding - applications table not present in current schema
 
   // Insert a sample extension
   const [extension] = await db
     .insert(schema.extensions)
     .values({
-      applicationId: app.id,
       name: "Hello World Extension",
+      slug: "hello-world-extension",
+      appId: "sample-app",
       description: "A simple extension that logs requests",
-      code: `
-function processRequest(request) {
-  console.log("Hello from extension!");
-  return request;
-}
-    `,
-      enabled: true,
+      status: "published",
+      isPublic: true,
+      manifest: {
+        permissions: [],
+        routes: [],
+        hooks: [],
+      },
     })
     .returning();
 
-  console.log(`Created extension: ${extension.name} (${extension.id})`);
+  if (extension) {
+    console.log(`Created extension: ${extension.name} (${extension.id})`);
+  }
   console.log("Seeding completed successfully");
 
   await client.end();

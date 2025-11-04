@@ -27,9 +27,8 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"
 
-  # Optional: Lightweight database for agent state (not required)
   postgres:
-    image: postgres:15-alpine
+    image: postgres:17
     environment:
       POSTGRES_DB: acacia
       POSTGRES_USER: acacia

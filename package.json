@@ -1,20 +1,23 @@
 {
-  "name": "remora",
+  "name": "acacia",
   "version": "1.0.0",
   "description": "Open source extension proxy for web applications",
   "main": "index.ts",
   "scripts": {
-    "start": "bun run index.ts",
-    "dev": "bun run --watch index.ts",
+    "start": "tsx index.ts",
+    "dev": "tsx watch index.ts",
+    "build": "esbuild index.ts --bundle --platform=node --format=esm --outfile=dist/index.mjs",
+    "start:prod": "node dist/index.mjs",
     "db:generate": "drizzle-kit generate:pg",
-    "db:migrate": "bun run migrate.ts",
+    "db:migrate": "drizzle-kit migrate:pg",
     "db:studio": "drizzle-kit studio"
   },
   "module": "index.ts",
   "type": "module",
   "devDependencies": {
-    "@types/bun": "latest",
-    "drizzle-kit": "^0.31.4"
+    "drizzle-kit": "^0.31.4",
+    "@types/node": "^20.11.19",
+    "tsx": "^4.7.0"
   },
   "peerDependencies": {
     "typescript": "^5"
@@ -25,9 +28,11 @@
     "@types/ws": "^8.18.1",
     "dockerode": "^4.0.8",
     "drizzle-orm": "^0.44.5",
-    "hono": "^4.9.6",
+    "fastify": "^4.28.1",
+    "@fastify/websocket": "^7.0.1",
     "openai": "^5.20.1",
     "postgres": "^3.4.7",
-    "ws": "^8.18.3"
+    "ws": "^8.18.3",
+    "esbuild": "^0.21.3"
   }
 }
